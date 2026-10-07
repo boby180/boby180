@@ -326,3 +326,56 @@ def test_enhance_underwater_photos(tmp_path):
     # Running again does not overwrite.
     again = enhance_folder(src, tmp_path / "out", EXTS, EXCLUDE)
     assert {r.status for r in again} == {"skipped-exists", "skipped-not-underwater"}
+
+
+def test_dedupe_moves_only_from_chosen_folder_and_undo(tmp_path):
+    server = tmp_path / "nas" / "Photos"
+    a = make_photo(server / "2019" / "a.jpg", 50)
+    b = make_photo(server / "temp-1" / "only_here.jpg", 51)
+    (server / "temp-1" / "2019").mkdir(parents=True)
+    shutil.copy2(a, server / "temp-1" / "2019" / "a.jpg")          # copy of a photo kept in 2019
+    shutil.copy2(b, server / "temp-1" / "only_here_copy.jpg")      # both copies inside temp-1
+    make_photo(server / "2019" / "unique.jpg", 52)
+
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text(
+        f"local:\n  paths: ['{server.as_posix()}']\n"
+        f"server:\n  paths: ['{server.as_posix()}']\n  upload_path: '{(server / 'up').as_posix()}'\n",
+        encoding="utf-8",
+    )
+    temp = (server / "temp-1").as_posix()
+
+    assert main(["-c", str(cfg), "dedupe", "--from", temp]) == 0       # dry run
+    assert (server / "temp-1" / "2019" / "a.jpg").exists()
+
+    assert main(["-c", str(cfg), "dedupe", "--from", temp, "--execute"]) == 0
+    review = server / "_duplicates_to_review" / "temp-1"
+    assert not (server / "temp-1" / "2019" / "a.jpg").exists()
+    assert (review / "2019" / "a.jpg").exists()
+    assert (server / "2019" / "a.jpg").exists()                        # the kept copy
+    # Both copies of only_here were inside temp-1: exactly one stays.
+    left = [p.name for p in (server / "temp-1").glob("only_here*.jpg")]
+    assert len(left) == 1
+    assert (server / "2019" / "unique.jpg").exists()
+
+    # The review folder is not counted as photos any more.
+    assert main(["-c", str(cfg), "duplicates"]) == 0
+
+    (log,) = (tmp_path / "reports").glob("dedupe-*.csv")
+    assert main(["-c", str(cfg), "undo-dedupe", str(log)]) == 0
+    assert (server / "temp-1" / "2019" / "a.jpg").exists()
+    assert len(list((server / "temp-1").glob("only_here*.jpg"))) == 2
+
+
+def test_dedupe_refuses_folders_outside_server(tmp_path):
+    server = tmp_path / "nas"
+    server.mkdir()
+    other = tmp_path / "elsewhere"
+    other.mkdir()
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text(
+        f"local:\n  paths: ['{server.as_posix()}']\n"
+        f"server:\n  paths: ['{server.as_posix()}']\n  upload_path: '{(server / 'up').as_posix()}'\n",
+        encoding="utf-8",
+    )
+    assert main(["-c", str(cfg), "dedupe", "--from", other.as_posix(), "--execute"]) == 2

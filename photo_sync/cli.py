@@ -17,7 +17,8 @@ from .cache import ScanCache
 from .compare import EXACT, MISSING, SIMILAR, compare_images, summarize
 from .config import Config, ConfigError, load_config
 from .enhance import enhance_folder
-from .duplicates import EXACT as DUP_EXACT, find_duplicates, location_summary
+from .dedupe import REVIEW_DIR, execute_moves, is_under, new_log_path, plan_moves, undo_moves
+from .duplicates import EXACT as DUP_EXACT, find_duplicates, location, location_summary
 from .report import write_compare_report, write_enhance_report, write_duplicates_report, write_upload_report
 from .scanner import ImageInfo, imagehash, scan_folder
 from .uploader import make_uploader, upload_missing
@@ -45,7 +46,7 @@ def _scan(config: Config, cache: ScanCache, paths: list[str], label: str) -> lis
         images += scan_folder(
             path,
             config.compare.extensions,
-            config.compare.exclude,
+            [*config.compare.exclude, REVIEW_DIR],  # moved duplicates never count as photos
             cache=cache,
             use_perceptual_hash=config.compare.use_perceptual_hash,
             workers=config.compare.workers,
@@ -150,6 +151,56 @@ def cmd_duplicates(config: Config, args) -> int:
     return 0
 
 
+def cmd_dedupe(config: Config, args) -> int:
+    config.validate()
+    server_roots = config.server_scan_paths()
+    for folder in args.from_folders:
+        if not Path(folder).is_dir():
+            raise ConfigError(f"Folder not found: {folder}")
+        if not is_under(folder, [p.replace("\\", "/").rstrip("/").casefold() for p in server_roots]):
+            raise ConfigError(f"{folder} is not inside one of the server folders in config.yaml")
+
+    with ScanCache(config.output.cache_file) as cache:
+        images = _scan(config, cache, server_roots, "server")
+    print("Looking for identical copies...")
+    groups = find_duplicates(images, include_similar=False)
+    plans = plan_moves(groups, args.from_folders)
+
+    by_location: dict[str, list[int]] = {}
+    for p in plans:
+        entry = by_location.setdefault(location(p.source), [0, 0])
+        entry[0] += 1
+        entry[1] += p.source.size
+    total_mb = sum(p.source.size for p in plans) / 1024 / 1024
+    print(f"\nIdentical copies to move out of the chosen folders: {len(plans)} files, {total_mb:.0f} MB")
+    for loc, (count, size) in sorted(by_location.items(), key=lambda kv: -kv[1][1]):
+        print(f"  {size / 1024 / 1024:8.0f} MB  {count:6} files  from: {loc}")
+    print(f"Each one stays available elsewhere; moved files go to '{REVIEW_DIR}' in the same shared folder.")
+
+    if not args.execute:
+        for p in plans[:10]:
+            print(f"  [dry-run] {p.source.path}\n            copy kept: {p.kept.path}")
+        if plans:
+            print("\nThis was a dry run - nothing was moved. Add --execute to move the files.")
+        return 0
+
+    log_path = new_log_path(config.output.report_dir)
+    counts = execute_moves(plans, log_path)
+    print("\nSummary:", ", ".join(f"{k}={v}" for k, v in counts.items()) or "nothing to move")
+    print(f"Log (needed for undo): {log_path}")
+    print(f'To put everything back:  python -m photo_sync undo-dedupe "{log_path}"')
+    return 1 if counts.get("failed") else 0
+
+
+def cmd_undo_dedupe(config: Config, args) -> int:
+    log_csv = Path(args.log)
+    if not log_csv.is_file():
+        raise ConfigError(f"Log file not found: {log_csv}")
+    counts = undo_moves(log_csv)
+    print("\nSummary:", ", ".join(f"{k}={v}" for k, v in counts.items()) or "nothing to restore")
+    return 1 if counts.get("missing") else 0
+
+
 def cmd_enhance(config: Config, args) -> int:
     source = Path(args.source)
     if not source.is_dir():
@@ -189,6 +240,12 @@ def main(argv: list[str] | None = None) -> int:
     dup = sub.add_parser("duplicates", help="find duplicate photos (report only, nothing is deleted)")
     dup.add_argument("--where", choices=["server", "computer", "all"], default="server",
                      help="where to look for duplicates (default: server)")
+    ded = sub.add_parser("dedupe", help="move identical copies out of chosen server folders (dry run by default)")
+    ded.add_argument("--from", dest="from_folders", action="append", required=True, metavar="FOLDER",
+                     help="server folder to remove copies from (repeatable); a copy always stays elsewhere")
+    ded.add_argument("--execute", action="store_true", help="really move the files (default is a dry run)")
+    und = sub.add_parser("undo-dedupe", help="put back files moved by dedupe, using its log")
+    und.add_argument("log", help="the dedupe-....csv log file from the reports folder")
     enh = sub.add_parser("enhance", help="colour-correct underwater photos into a separate folder")
     enh.add_argument("source", help="folder with the photos to enhance")
     enh.add_argument("--output", help="where to write the corrected copies (default: 'enhanced' next to the config)")
@@ -200,7 +257,8 @@ def main(argv: list[str] | None = None) -> int:
                     help="also upload photos whose copy on the server is of lower quality")
     args = parser.parse_args(argv)
 
-    handlers = {"check": cmd_check, "compare": cmd_compare, "upload": cmd_upload, "duplicates": cmd_duplicates, "enhance": cmd_enhance}
+    handlers = {"check": cmd_check, "compare": cmd_compare, "upload": cmd_upload, "duplicates": cmd_duplicates, "enhance": cmd_enhance,
+                "dedupe": cmd_dedupe, "undo-dedupe": cmd_undo_dedupe}
     try:
         config = load_config(args.config)
         return handlers[args.command](config, args)

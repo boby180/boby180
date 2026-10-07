@@ -96,6 +96,19 @@ python -m photo_sync duplicates --where all      # גם וגם
 בכל קבוצה מסומנת הגרסה שמומלץ להשאיר: זו עם הרזולוציה הגבוהה ביותר.
 תוצאות הסריקה נשמרות, כך שאחרי `compare` הפקודה רצה מהר.
 
+### ניקוי עותקים זהים
+
+```bash
+python -m photo_sync dedupe --from "//NAS/home/Photos/temp-1"             # הרצת ניסיון
+python -m photo_sync dedupe --from "//NAS/home/Photos/temp-1" --execute   # העברה בפועל
+python -m photo_sync undo-dedupe "reports/dedupe-....csv"                 # להחזיר הכול
+```
+
+* רק עותקים **זהים לחלוטין** מטופלים, ורק בתוך התיקיות שנבחרו עם `--from`.
+* תמיד נשאר לפחות עותק אחד של כל תמונה.
+* שום דבר לא נמחק: העותקים **מועברים** לתיקייה `_duplicates_to_review` באותה תיקייה משותפת.
+  אחרי שבודקים אותה, אפשר למחוק אותה ידנית. עד אז `undo-dedupe` מחזיר הכול למקום.
+
 ## שיפור תמונות תת-ימיות
 
 ```bash
