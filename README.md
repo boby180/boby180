@@ -37,8 +37,9 @@ cp config.example.yaml config.yaml      # ב-Windows: copy config.example.yaml c
 ערוך את `config.yaml`:
 
 * `local.paths`: תיקיות התמונות במחשב, למשל `C:/Users/me/Pictures`.
-* `server.path`: התיקייה המשותפת בסינולוגי, למשל `//DS920/photo` או כונן ממופה `Z:/photo`.
-* `server.upload_subfolder`: לאיזו תת-תיקייה בשרת להעלות את התמונות החסרות.
+* `server.paths`: התיקיות בשרת להשוואה. אפשר לרשום כמה תיקיות, למשל `//DS920/photo` ו-`//DS920/home/Photos`.
+  כונן ממופה (כמו `Z:`) מצביע על תיקייה משותפת אחת בלבד. כדי לראות לאן הוא מצביע, הרץ `net use`.
+* `server.upload_path`: לאן להעלות את התמונות החסרות. גם התיקייה הזו נכללת בהשוואה.
 
 ההעלאה הרגילה (`copy`) מעתיקה דרך הכונן הממופה. אפשר גם להעלות דרך ה-API של File Station
 (`upload_method: filestation`). במקרה כזה הסיסמה נקראת ממשתנה סביבה ולא נשמרת בקובץ:
@@ -48,7 +49,7 @@ set SYNOLOGY_PASSWORD=...          # Windows
 export SYNOLOGY_PASSWORD=...       # Mac/Linux
 ```
 
-גם במצב `filestation` צריך `server.path` נגיש, כי הסריקה של השרת נעשית דרכו.
+גם במצב `filestation` צריך ש-`server.paths` יהיו נגישים, כי הסריקה של השרת נעשית דרכם.
 
 ## שימוש
 

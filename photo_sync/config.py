@@ -41,8 +41,10 @@ class FileStationConfig:
 
 @dataclass
 class ServerConfig:
-    path: str = ""
-    upload_subfolder: str = "uploaded-from-pc"
+    # Server folders to compare against (photos may be spread over several shares).
+    paths: list[str] = field(default_factory=list)
+    # Folder on the server where missing photos are uploaded (also compared against).
+    upload_path: str = ""
     upload_method: str = "copy"  # "copy" (mapped drive / UNC / mount) or "filestation"
     filestation: FileStationConfig = field(default_factory=FileStationConfig)
 
@@ -72,8 +74,10 @@ class Config:
     def validate(self, require_existing_paths: bool = True) -> None:
         if not self.local_paths:
             raise ConfigError("local.paths is empty - add at least one folder on the computer")
-        if not self.server.path:
-            raise ConfigError("server.path is empty - set the path to the Synology shared folder")
+        if not self.server.paths:
+            raise ConfigError("server.paths is empty - add at least one Synology folder")
+        if not self.server.upload_path and self.server.upload_method == "copy":
+            raise ConfigError("server.upload_path is empty - set where missing photos are uploaded")
         if self.server.upload_method not in ("copy", "filestation"):
             raise ConfigError("server.upload_method must be 'copy' or 'filestation'")
         if self.server.upload_method == "filestation":
@@ -83,9 +87,25 @@ class Config:
         if not 0 <= self.compare.similarity_threshold <= 64:
             raise ConfigError("compare.similarity_threshold must be between 0 and 64")
         if require_existing_paths:
-            for p in [*self.local_paths, self.server.path]:
+            for p in [*self.local_paths, *self.server.paths]:
                 if not Path(p).is_dir():
                     raise ConfigError(f"Folder not found or not accessible: {p}")
+            if self.server.upload_method == "copy":
+                parent = Path(self.server.upload_path)
+                while not parent.exists() and parent.parent != parent:
+                    parent = parent.parent  # upload folder is created on first upload
+                if not parent.is_dir():
+                    raise ConfigError(f"Upload folder not accessible: {self.server.upload_path}")
+
+    def server_scan_paths(self) -> list[str]:
+        """Server folders to scan: ``paths`` plus the upload folder if it is not inside one of them."""
+        paths = list(self.server.paths)
+        upload = self.server.upload_path
+        if upload and Path(upload).is_dir():
+            up = Path(upload).resolve()
+            if not any(up == Path(p).resolve() or Path(p).resolve() in up.parents for p in paths):
+                paths.append(upload)
+        return paths
 
 
 def _section(data: dict, name: str) -> dict:
@@ -119,10 +139,13 @@ def _build_config(path: Path, local: dict, server: dict, compare: dict, output: 
         local_paths = [local_paths]
 
     fs = FileStationConfig(**_section(server, "filestation"))
+    if isinstance(server.get("paths"), str):
+        server["paths"] = [server["paths"]]
     server_cfg = ServerConfig(
         **{k: v for k, v in server.items() if k != "filestation" and v is not None},
         filestation=fs,
     )
+    server_cfg.paths = [str(p) for p in server_cfg.paths]
     compare_cfg = CompareConfig(**{k: v for k, v in compare.items() if v is not None})
     compare_cfg.extensions = [
         e.lower() if e.startswith(".") else "." + e.lower() for e in compare_cfg.extensions

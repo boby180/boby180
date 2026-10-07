@@ -47,7 +47,7 @@ def _run_compare(config: Config):
         print("warning: ImageHash is not installed - visual similarity is disabled", file=sys.stderr)
     with ScanCache(config.output.cache_file) as cache:
         local = _scan(config, cache, config.local_paths, "computer")
-        server = _scan(config, cache, [config.server.path], "server")
+        server = _scan(config, cache, config.server_scan_paths(), "server")
     results = compare_images(local, server, config.compare.similarity_threshold)
     summary = summarize(results)
     print()
@@ -63,8 +63,10 @@ def cmd_check(config: Config, args) -> int:
     config.validate()
     print("Config OK")
     print("  computer:", ", ".join(config.local_paths))
-    print("  server:  ", config.server.path)
-    print("  upload:  ", config.server.upload_method)
+    print("  server:  ", ", ".join(config.server.paths))
+    target = config.server.filestation.target_folder if config.server.upload_method == "filestation" \
+        else config.server.upload_path
+    print("  upload:  ", config.server.upload_method, "->", target)
     if config.server.upload_method == "filestation":
         uploader = make_uploader(config)  # logs in, raises on bad credentials
         uploader.close()

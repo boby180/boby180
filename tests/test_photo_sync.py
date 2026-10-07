@@ -111,7 +111,7 @@ def test_upload_copy_never_overwrites_and_skips_duplicates(dirs):
     before = existing.read_bytes()
 
     results = compare_images(scan(local), scan(server))
-    uploader = CopyUploader(str(server), "up")
+    uploader = CopyUploader(str(server / "up"))
 
     dry = upload_missing(results, uploader, dry_run=True, log=lambda m: None)
     assert [r["status"] for r in dry] == ["would-upload", "skipped"]
@@ -140,13 +140,18 @@ def test_cache_reuses_results(dirs, tmp_path):
 
 def test_cli_end_to_end(dirs, tmp_path):
     local, server = dirs
+    share2 = tmp_path / "nas2"
+    share2.mkdir()
     make_photo(local / "a.jpg", 10)
     make_photo(local / "b.jpg", 11)
+    make_photo(local / "c.jpg", 13)
     shutil.copy2(local / "a.jpg", server / "a.jpg")
+    shutil.copy2(local / "c.jpg", share2 / "c.jpg")  # found in the second share
     cfg = tmp_path / "config.yaml"
     cfg.write_text(
         f"local:\n  paths: ['{local.as_posix()}']\n"
-        f"server:\n  path: '{server.as_posix()}'\n  upload_subfolder: up\n",
+        f"server:\n  paths: ['{server.as_posix()}', '{share2.as_posix()}']\n"
+        f"  upload_path: '{(server / 'up').as_posix()}'\n",
         encoding="utf-8",
     )
     assert main(["-c", str(cfg), "check"]) == 0
@@ -157,19 +162,22 @@ def test_cli_end_to_end(dirs, tmp_path):
     assert main(["-c", str(cfg), "upload", "--execute"]) == 0
     assert (server / "up" / "Pictures" / "b.jpg").exists()
     assert not (server / "up" / "Pictures" / "a.jpg").exists()
+    assert not (server / "up" / "Pictures" / "c.jpg").exists()
 
 
 def test_config_errors(tmp_path):
     with pytest.raises(ConfigError):
         load_config(tmp_path / "missing.yaml")
     bad = tmp_path / "bad.yaml"
-    bad.write_text("local:\n  paths: [x]\nserver:\n  path: y\n  bogus: 1\n", encoding="utf-8")
+    bad.write_text("local:\n  paths: [x]\nserver:\n  paths: [y]\n  bogus: 1\n", encoding="utf-8")
     with pytest.raises(ConfigError):
         load_config(bad)
     ok = tmp_path / "ok.yaml"
-    ok.write_text("local:\n  paths: [/nope]\nserver:\n  path: /nope2\n", encoding="utf-8")
+    ok.write_text("local:\n  paths: [/nope]\nserver:\n  paths: /nope2\n  upload_path: /nope2/up\n", encoding="utf-8")
+    config = load_config(ok)
+    assert config.server.paths == ["/nope2"]
     with pytest.raises(ConfigError):
-        load_config(ok).validate()
+        config.validate()
 
 
 def test_hebrew_folder_names(tmp_path):

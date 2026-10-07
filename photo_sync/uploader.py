@@ -44,8 +44,8 @@ def _unique_name(name: str, exists: Callable[[str], bool]) -> str:
 
 
 class CopyUploader:
-    def __init__(self, server_path: str, subfolder: str):
-        self.base = Path(server_path) / subfolder
+    def __init__(self, upload_path: str):
+        self.base = Path(upload_path)
 
     def upload(self, local_path: str, rel_target: str) -> str:
         target = self.base / PurePosixPath(rel_target)
@@ -149,7 +149,7 @@ def make_uploader(config: Config):
     if config.server.upload_method == "filestation":
         fs = config.server.filestation
         return FileStationUploader(fs.url, fs.username, fs.password, fs.target_folder, fs.verify_ssl)
-    return CopyUploader(config.server.path, config.server.upload_subfolder)
+    return CopyUploader(config.server.upload_path)
 
 
 def upload_missing(
