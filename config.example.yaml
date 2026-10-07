@@ -1,0 +1,46 @@
+# Copy this file to config.yaml and fill in your paths.
+# העתק את הקובץ ל-config.yaml ומלא את הנתיבים.
+
+local:
+  # Folders on the computer to compare (one or more).
+  # תיקיות במחשב להשוואה (אחת או יותר)
+  paths:
+    - "C:/Users/USERNAME/Pictures"        # TODO: replace
+
+server:
+  # Synology shared folder as reachable from this computer:
+  #   Windows mapped drive: "Z:/photo"   or UNC: "//NAS-NAME/photo"
+  #   Mac: "/Volumes/photo"              Linux: "/mnt/nas/photo"
+  # התיקייה המשותפת בסינולוגי כפי שהיא נגישה מהמחשב
+  path: "//NAS-NAME/photo"                # TODO: replace
+
+  # Missing photos are uploaded into this subfolder of server.path,
+  # keeping the original folder structure.
+  # תמונות חסרות יועלו לתת-תיקייה זו, עם מבנה התיקיות המקורי
+  upload_subfolder: "uploaded-from-pc"
+
+  # "copy"        - copy through the mapped drive/UNC path above (recommended)
+  # "filestation" - upload through the Synology File Station API
+  upload_method: copy
+
+  filestation:
+    url: "https://NAS-NAME:5001"
+    username: "USERNAME"
+    password_env: SYNOLOGY_PASSWORD      # the password is read from this environment variable
+    target_folder: "/photo/uploaded-from-pc"
+    verify_ssl: true
+
+compare:
+  extensions: [.jpg, .jpeg, .png, .gif, .bmp, .tif, .tiff, .webp, .heic, .heif]
+  # Folder/file names to skip (@eaDir holds Synology thumbnails - keep it here!)
+  exclude: ["@eaDir", "#recycle", "#snapshot", ".DS_Store", "Thumbs.db", "desktop.ini"]
+  # Visual comparison: finds the same photo even if resized/re-compressed or renamed.
+  use_perceptual_hash: true
+  # 0 = pixel-identical only, 6 = default, >10 may match different photos.
+  similarity_threshold: 6
+  # Parallel file reads (raise for fast networks).
+  workers: 4
+
+output:
+  report_dir: reports
+  cache_file: .photo_sync_cache.sqlite
