@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+import warnings
 from pathlib import Path
 
 from .cache import ScanCache
@@ -169,6 +170,9 @@ def main(argv: list[str] | None = None) -> int:
     for stream in (sys.stdout, sys.stderr):
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(errors="replace")
+    # Old photos often carry slightly damaged EXIF; Pillow reads what it can, so the warning is just noise.
+    warnings.filterwarnings("ignore", message="Corrupt EXIF data")
+    warnings.filterwarnings("ignore", message="Possibly corrupt EXIF")
     parser = argparse.ArgumentParser(
         prog="photo_sync",
         description="Compare photos on this computer with a Synology NAS and upload what is missing.",

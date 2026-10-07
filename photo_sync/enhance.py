@@ -105,10 +105,13 @@ def enhance_file(source: Path, target: Path, strength: float = 1.0, only_underwa
             out = enhance_underwater(img, strength)
         if exif:
             # The pixels are already rotated upright, so reset the orientation tag.
-            exif_obj = Image.Exif()
-            exif_obj.load(exif)
-            exif_obj[0x0112] = 1
-            exif = exif_obj.tobytes()
+            try:
+                exif_obj = Image.Exif()
+                exif_obj.load(exif)
+                exif_obj[0x0112] = 1
+                exif = exif_obj.tobytes()
+            except Exception:
+                exif = None  # damaged metadata: save the corrected photo without it
         target.parent.mkdir(parents=True, exist_ok=True)
         save_kwargs = {"exif": exif} if exif else {}
         if icc:
