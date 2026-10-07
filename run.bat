@@ -38,8 +38,9 @@ python -c "import venv" >nul 2>nul && set "BASEPY=python"
 if defined BASEPY exit /b 0
 python3 -c "import venv" >nul 2>nul && set "BASEPY=python3"
 if defined BASEPY exit /b 0
-rem Python installed but not on PATH: look in the usual install folders, newest last wins.
-for /d %%D in ("%LOCALAPPDATA%\Programs\Python\Python3*" "%LOCALAPPDATA%\Python\pythoncore-3*" "%ProgramFiles%\Python3*" "C:\Python3*") do (
+rem Python installed but not on PATH: look in the usual install folders.
+rem Anaconda / Miniconda first; a regular python.org install found later wins.
+for /d %%D in ("%USERPROFILE%\anaconda3" "%USERPROFILE%\miniconda3" "%LOCALAPPDATA%\anaconda3" "%LOCALAPPDATA%\miniconda3" "%ProgramData%\anaconda3" "%ProgramData%\miniconda3" "C:\anaconda3" "C:\miniconda3" "%USERPROFILE%\Anaconda3" "%LOCALAPPDATA%\Programs\Python\Python3*" "%LOCALAPPDATA%\Python\pythoncore-3*" "%ProgramFiles%\Python3*" "C:\Python3*") do (
     if exist "%%~D\python.exe" set BASEPY="%%~D\python.exe"
 )
 exit /b 0
