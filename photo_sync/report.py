@@ -54,6 +54,22 @@ def write_csv(rows: list[dict], path: Path, columns: list[str]) -> None:
         writer.writerows(rows)
 
 
+def _file_uri(path: str) -> str | None:
+    try:
+        return Path(path).absolute().as_uri()
+    except ValueError:
+        return None
+
+
+def _thumb(path: str) -> str:
+    """Small preview loaded straight from disk/NAS when scrolled into view."""
+    uri = _file_uri(path) if path else None
+    if not uri:
+        return ""
+    uri = html.escape(uri, quote=True)
+    return f'<a href="{uri}" target="_blank"><img loading="lazy" src="{uri}" alt=""></a>'
+
+
 def write_html(results: list[MatchResult], path: Path) -> None:
     summary = summarize(results)
     order = {MISSING: 0, SIMILAR: 1, EXACT: 2}
@@ -61,12 +77,16 @@ def write_html(results: list[MatchResult], path: Path) -> None:
     for r in sorted(results, key=lambda r: (order[r.status], r.local.path)):
         d = _row(r)
         rows.append(
-            "<tr class='{status}'><td>{label}</td><td>{local}</td><td>{server}</td>"
+            "<tr class='{status}'><td>{label}</td><td>{local_img}<div>{local}</div></td>"
+            "<td>{server_img}<div>{server}</div></td><td>{distance}</td>"
             "<td>{taken}</td><td>{desc}</td><td>{diffs}</td></tr>".format(
                 status=r.status,
                 label=html.escape(d["status_he"]),
+                local_img=_thumb(d["local_path"]),
                 local=html.escape(d["local_path"]),
+                server_img=_thumb(d["server_path"]),
                 server=html.escape(d["server_path"]),
+                distance=d["distance"],
                 taken=html.escape(d["taken"]),
                 desc=html.escape(d["description"] or d["title"]),
                 diffs=html.escape(d["differences"]).replace(" | ", "<br>"),
@@ -80,7 +100,8 @@ def write_html(results: list[MatchResult], path: Path) -> None:
 <style>
 body {{ font-family: system-ui, sans-serif; margin: 16px; background: #fff; color: #222; }}
 table {{ border-collapse: collapse; width: 100%; font-size: 13px; }}
-th, td {{ border: 1px solid #ddd; padding: 4px 6px; text-align: right; vertical-align: top; word-break: break-all; }}
+th, td {{ border: 1px solid #ddd; padding: 4px 6px; text-align: right; vertical-align: top; overflow-wrap: anywhere; }}
+td:first-child {{ white-space: nowrap; }}
 th {{ background: #f3f3f3; position: sticky; top: 0; }}
 tr.missing td:first-child {{ background: #fde2e2; }}
 tr.similar td:first-child {{ background: #fff4cc; }}
@@ -88,21 +109,36 @@ tr.exact td:first-child {{ background: #e2f5e2; }}
 .cards {{ display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 16px; }}
 .card {{ border: 1px solid #ddd; border-radius: 8px; padding: 8px 14px; }}
 .card b {{ font-size: 22px; display: block; }}
+button.card {{ font: inherit; background: #fff; cursor: pointer; text-align: right; }}
+button.card.active {{ outline: 3px solid #4a7bd0; }}
+td img {{ width: 120px; max-height: 120px; object-fit: contain; display: block; background: #f6f6f6; }}
 </style></head><body>
 <h1>השוואת תמונות: מחשב מול שרת</h1>
-<p>נוצר ב-{datetime.now():%Y-%m-%d %H:%M}</p>
+<p>נוצר ב-{datetime.now():%Y-%m-%d %H:%M}. לחיצה על כרטיס מסננת את הטבלה; לחיצה על תמונה פותחת אותה בגודל מלא.
+"מרחק חזותי": 0 = נראות זהות, ככל שהמספר גבוה יותר ההבדל גדול יותר.</p>
 <div class="cards">
-<div class="card"><b>{len(results)}</b>תמונות במחשב</div>
-<div class="card"><b>{summary[EXACT]}</b>{STATUS_LABELS[EXACT]}</div>
-<div class="card"><b>{summary[SIMILAR]}</b>{STATUS_LABELS[SIMILAR]}</div>
-<div class="card"><b>{summary[MISSING]}</b>{STATUS_LABELS[MISSING]}</div>
+<button class="card active" data-filter="all"><b>{len(results)}</b>תמונות במחשב</button>
+<button class="card" data-filter="exact"><b>{summary[EXACT]}</b>{STATUS_LABELS[EXACT]}</button>
+<button class="card" data-filter="similar"><b>{summary[SIMILAR]}</b>{STATUS_LABELS[SIMILAR]}</button>
+<button class="card" data-filter="missing"><b>{summary[MISSING]}</b>{STATUS_LABELS[MISSING]}</button>
 <div class="card"><b>{summary['errors']}</b>שגיאות קריאה</div>
 </div>
-<table><thead><tr><th>סטטוס</th><th>קובץ במחשב</th><th>התאמה בשרת</th><th>תאריך צילום</th>
+<table><thead><tr><th>סטטוס</th><th>קובץ במחשב</th><th>התאמה בשרת</th><th>מרחק חזותי</th><th>תאריך צילום</th>
 <th>תיאור</th><th>הבדלים</th></tr></thead>
 <tbody>
 {chr(10).join(rows)}
-</tbody></table></body></html>
+</tbody></table>
+<script>
+document.querySelectorAll("button.card").forEach(function (button) {{
+  button.addEventListener("click", function () {{
+    var filter = button.dataset.filter;
+    document.querySelectorAll("button.card").forEach(function (b) {{ b.classList.toggle("active", b === button); }});
+    document.querySelectorAll("tbody tr").forEach(function (row) {{
+      row.style.display = filter === "all" || row.classList.contains(filter) ? "" : "none";
+    }});
+  }});
+}});
+</script></body></html>
 """,
         encoding="utf-8",
     )
@@ -191,7 +227,7 @@ def write_duplicates_report(groups, total_images: int, report_dir: str | Path) -
             body.append(
                 "<tr><td>{s}</td><td>{p}</td><td>{d}</td><td>{t}</td><td>{x}</td></tr>".format(
                     s="להשאיר" if keep else "עותק נוסף",
-                    p=html.escape(img.path),
+                    p=_thumb(img.path) + "<div>" + html.escape(img.path) + "</div>",
                     d=f"{img.width or '?'}x{img.height or '?'}, {_human_size(img.size)}",
                     t=html.escape(img.taken or ""),
                     x=html.escape(img.description or img.title or ""),
@@ -205,11 +241,13 @@ def write_duplicates_report(groups, total_images: int, report_dir: str | Path) -
 <style>
 body {{ font-family: system-ui, sans-serif; margin: 16px; background: #fff; color: #222; }}
 table {{ border-collapse: collapse; width: 100%; font-size: 13px; }}
-th, td {{ border: 1px solid #ddd; padding: 4px 6px; text-align: right; vertical-align: top; word-break: break-all; }}
+th, td {{ border: 1px solid #ddd; padding: 4px 6px; text-align: right; vertical-align: top; overflow-wrap: anywhere; }}
+td:first-child {{ white-space: nowrap; }}
 th {{ background: #f3f3f3; position: sticky; top: 0; }}
 tr.head td {{ font-weight: bold; padding-top: 10px; }}
 tr.head.exact td {{ background: #fde2e2; }}
 tr.head.similar td {{ background: #fff4cc; }}
+td img {{ width: 120px; max-height: 120px; object-fit: contain; display: block; background: #f6f6f6; }}
 .cards {{ display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 16px; }}
 .card {{ border: 1px solid #ddd; border-radius: 8px; padding: 8px 14px; }}
 .card b {{ font-size: 22px; display: block; }}

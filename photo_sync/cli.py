@@ -15,9 +15,17 @@ from .cache import ScanCache
 from .compare import EXACT, MISSING, SIMILAR, compare_images, summarize
 from .config import Config, ConfigError, load_config
 from .duplicates import EXACT as DUP_EXACT, find_duplicates
-from .report import STATUS_LABELS, write_compare_report, write_duplicates_report, write_upload_report
+from .report import write_compare_report, write_duplicates_report, write_upload_report
 from .scanner import ImageInfo, imagehash, scan_folder
 from .uploader import make_uploader, upload_missing
+
+
+# English in the console: the Windows console prints Hebrew reversed. The HTML report is in Hebrew.
+CONSOLE_LABELS = {
+    EXACT: "on server - identical copy",
+    SIMILAR: "on server - same photo, other version",
+    MISSING: "missing on server",
+}
 
 
 def _progress(label: str):
@@ -54,7 +62,7 @@ def _run_compare(config: Config):
     print()
     print(f"Photos on computer: {len(local)}   photos on server: {len(server)}")
     for status in (EXACT, SIMILAR, MISSING):
-        print(f"  {STATUS_LABELS[status]:<20} {summary[status]}")
+        print(f"  {CONSOLE_LABELS[status]:<34} {summary[status]}")
     if summary["errors"]:
         print(f"  read errors: {summary['errors']}")
     return results
