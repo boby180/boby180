@@ -212,7 +212,23 @@ def _duplicate_rows(groups) -> list[dict]:
     return rows
 
 
-def write_duplicates_report(groups, total_images: int, report_dir: str | Path) -> dict[str, Path]:
+def _location_table(summary) -> str:
+    if not summary:
+        return ""
+    rows = "".join(
+        f"<tr><td>{_human_size(s.wasted_bytes)}</td><td>{s.extra_files}</td>"
+        f"<td>{'<br>'.join(html.escape(loc) for loc in s.locations)}</td></tr>"
+        for s in summary[:30]
+    )
+    return (
+        "<h2>איפה נמצאים העותקים הזהים</h2>"
+        "<table class='locations'><thead><tr><th>מקום מיותר</th><th>עותקים מיותרים</th>"
+        f"<th>התיקיות שמחזיקות את אותן תמונות</th></tr></thead><tbody>{rows}</tbody></table>"
+        "<h2>כל הקבוצות</h2>"
+    )
+
+
+def write_duplicates_report(groups, total_images: int, report_dir: str | Path, summary=None) -> dict[str, Path]:
     report_dir = Path(report_dir)
     report_dir.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -271,6 +287,7 @@ td img {{ width: 120px; max-height: 120px; object-fit: contain; display: block; 
 <div class="card"><b>{_human_size(wasted)}</b>מקום שאפשר לפנות</div>
 <div class="card"><b>{len(similar)}</b>קבוצות של אותה תמונה בגרסאות שונות</div>
 </div>
+{_location_table(summary)}
 <table><thead><tr><th>הצעה</th><th>קובץ</th><th>מידות וגודל</th><th>תאריך צילום</th><th>תיאור</th></tr></thead>
 <tbody>
 {chr(10).join(body)}

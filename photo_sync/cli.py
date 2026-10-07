@@ -17,7 +17,7 @@ from .cache import ScanCache
 from .compare import EXACT, MISSING, SIMILAR, compare_images, summarize
 from .config import Config, ConfigError, load_config
 from .enhance import enhance_folder
-from .duplicates import EXACT as DUP_EXACT, find_duplicates
+from .duplicates import EXACT as DUP_EXACT, find_duplicates, location_summary
 from .report import write_compare_report, write_enhance_report, write_duplicates_report, write_upload_report
 from .scanner import ImageInfo, imagehash, scan_folder
 from .uploader import make_uploader, upload_missing
@@ -140,7 +140,12 @@ def cmd_duplicates(config: Config, args) -> int:
     print(f"Photos checked: {len(images)}")
     print(f"  identical copies:     {len(exact)} groups, {sum(len(g.extra) for g in exact)} extra files, {wasted_mb:.0f} MB")
     print(f"  same photo, other version: {len(similar)} groups")
-    paths = write_duplicates_report(groups, len(images), config.output.report_dir)
+    summary = location_summary(groups)
+    if summary:
+        print("\nWhere the identical copies are (biggest first):")
+        for s in summary[:15]:
+            print(f"  {s.wasted_bytes / 1024 / 1024:8.0f} MB  {s.extra_files:6} extra files  in: {'  +  '.join(s.locations)}")
+    paths = write_duplicates_report(groups, len(images), config.output.report_dir, summary)
     print(f"\nReport (nothing was deleted): {paths['html']}\n                              {paths['csv']}")
     return 0
 

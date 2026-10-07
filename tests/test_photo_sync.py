@@ -251,6 +251,11 @@ def test_duplicates_on_server(dirs, tmp_path):
     assert len(similar.images) == 2
     assert similar.keep.width == 320  # higher resolution is suggested to keep
 
+    from photo_sync.duplicates import location_summary
+    (where,) = location_summary(groups)
+    assert [Path(loc).name for loc in where.locations] == ["2020", "backup"]
+    assert where.extra_files == 1
+
     cfg = tmp_path / "config.yaml"
     cfg.write_text(
         f"local:\n  paths: ['{dirs[0].as_posix()}']\n"

@@ -78,6 +78,35 @@ def find_duplicates(
     return groups
 
 
+def location(img: ImageInfo) -> str:
+    """Scanned folder plus its first sub-folder, e.g. '//NAS/photo/g-drive'."""
+    root = img.root.rstrip("/\\")
+    parts = img.rel_path.split("/", 1)
+    return f"{root}/{parts[0]}" if len(parts) > 1 else root
+
+
+@dataclass
+class LocationSummary:
+    locations: tuple[str, ...]  # the folders that hold copies of the same photos
+    groups: int
+    extra_files: int
+    wasted_bytes: int
+
+
+def location_summary(groups: list[DuplicateGroup]) -> list[LocationSummary]:
+    """Which folders duplicate which - biggest wasted space first."""
+    totals: dict[tuple[str, ...], LocationSummary] = {}
+    for group in groups:
+        if group.kind != EXACT:
+            continue
+        key = tuple(sorted({location(i) for i in group.images}))
+        entry = totals.setdefault(key, LocationSummary(key, 0, 0, 0))
+        entry.groups += 1
+        entry.extra_files += len(group.extra)
+        entry.wasted_bytes += group.wasted_bytes
+    return sorted(totals.values(), key=lambda s: -s.wasted_bytes)
+
+
 def _similar_groups(reps, threshold, progress) -> list[DuplicateGroup]:
     n = len(reps)
     if n < 2:
