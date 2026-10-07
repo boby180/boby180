@@ -265,16 +265,22 @@ def scan_folder(
     if progress:
         progress(done, len(files))
 
-    with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
+    pool = ThreadPoolExecutor(max_workers=max(1, workers))
+    try:
         for info in pool.map(lambda p: analyze_file(p, root, use_perceptual_hash), to_analyze):
             results.append(info)
             if cache is not None and info.error is None:
                 cache.put(info.path, info.size, info.mtime, cache_key, info.to_dict())
             done += 1
-            if progress and (done % 50 == 0 or done == len(files)):
-                progress(done, len(files))
-
-    if cache is not None:
-        cache.commit()
+            if done % 50 == 0 or done == len(files):
+                if cache is not None:
+                    cache.commit()  # an interrupted scan resumes from here next time
+                if progress:
+                    progress(done, len(files))
+    finally:
+        # On Ctrl+C, drop the queued files instead of waiting for all of them.
+        pool.shutdown(wait=True, cancel_futures=True)
+        if cache is not None:
+            cache.commit()
     results.sort(key=lambda i: i.path)
     return results

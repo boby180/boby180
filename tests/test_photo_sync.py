@@ -195,3 +195,34 @@ def test_hebrew_folder_names(tmp_path):
     assert result.local.rel_path == "סוכות באילת/תמונה 1.jpg"
     assert result.local.description == "חוף הים"
     assert result.local.title == "אילת"
+
+
+def test_interrupted_scan_keeps_progress(tmp_path):
+    local = tmp_path / "pics"
+    for i in range(60):
+        make_photo(local / f"{i}.jpg", 100 + i, size=(40, 30))
+
+    def stop(done, total):
+        if done >= 50:
+            raise KeyboardInterrupt
+
+    with ScanCache(tmp_path / "cache.sqlite") as cache:
+        with pytest.raises(KeyboardInterrupt):
+            scan_folder(local, EXTS, EXCLUDE, cache=cache, workers=1, progress=stop)
+
+    analyzed = []
+    original = __import__("photo_sync.scanner", fromlist=["analyze_file"]).analyze_file
+
+    def counting(path, *args):
+        analyzed.append(path)
+        return original(path, *args)
+
+    import photo_sync.scanner as scanner
+    scanner.analyze_file, saved = counting, scanner.analyze_file
+    try:
+        with ScanCache(tmp_path / "cache.sqlite") as cache:
+            result = scan_folder(local, EXTS, EXCLUDE, cache=cache, workers=1)
+    finally:
+        scanner.analyze_file = saved
+    assert len(result) == 60
+    assert len(analyzed) <= 10  # only the files not reached before the interruption
