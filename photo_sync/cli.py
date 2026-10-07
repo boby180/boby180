@@ -14,7 +14,8 @@ import sys
 from .cache import ScanCache
 from .compare import EXACT, MISSING, SIMILAR, compare_images, summarize
 from .config import Config, ConfigError, load_config
-from .report import STATUS_LABELS, write_compare_report, write_upload_report
+from .duplicates import EXACT as DUP_EXACT, find_duplicates
+from .report import STATUS_LABELS, write_compare_report, write_duplicates_report, write_upload_report
 from .scanner import ImageInfo, imagehash, scan_folder
 from .uploader import make_uploader, upload_missing
 
@@ -103,6 +104,34 @@ def cmd_upload(config: Config, args) -> int:
     return 1 if counts.get("failed") else 0
 
 
+def cmd_duplicates(config: Config, args) -> int:
+    config.validate()
+    paths = {
+        "server": config.server_scan_paths(),
+        "computer": config.local_paths,
+        "all": [*config.local_paths, *config.server_scan_paths()],
+    }[args.where]
+    with ScanCache(config.output.cache_file) as cache:
+        images = _scan(config, cache, paths, args.where)
+    print("Looking for duplicates...")
+    groups = find_duplicates(
+        images,
+        config.compare.similarity_threshold,
+        include_similar=config.compare.use_perceptual_hash,
+        progress=_progress("comparing"),
+    )
+    exact = [g for g in groups if g.kind == DUP_EXACT]
+    similar = [g for g in groups if g.kind != DUP_EXACT]
+    wasted_mb = sum(g.wasted_bytes for g in exact) / 1024 / 1024
+    print()
+    print(f"Photos checked: {len(images)}")
+    print(f"  identical copies:     {len(exact)} groups, {sum(len(g.extra) for g in exact)} extra files, {wasted_mb:.0f} MB")
+    print(f"  same photo, other version: {len(similar)} groups")
+    paths = write_duplicates_report(groups, len(images), config.output.report_dir)
+    print(f"\nReport (nothing was deleted): {paths['html']}\n                              {paths['csv']}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     # Hebrew file names must not crash printing on a Windows console with a legacy code page.
     for stream in (sys.stdout, sys.stderr):
@@ -116,11 +145,14 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("check", help="validate config and access to the folders")
     sub.add_parser("compare", help="compare and write an HTML/CSV report")
+    dup = sub.add_parser("duplicates", help="find duplicate photos (report only, nothing is deleted)")
+    dup.add_argument("--where", choices=["server", "computer", "all"], default="server",
+                     help="where to look for duplicates (default: server)")
     up = sub.add_parser("upload", help="upload photos that are missing on the server")
     up.add_argument("--execute", action="store_true", help="really upload (default is a dry run)")
     args = parser.parse_args(argv)
 
-    handlers = {"check": cmd_check, "compare": cmd_compare, "upload": cmd_upload}
+    handlers = {"check": cmd_check, "compare": cmd_compare, "upload": cmd_upload, "duplicates": cmd_duplicates}
     try:
         config = load_config(args.config)
         return handlers[args.command](config, args)

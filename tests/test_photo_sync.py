@@ -226,3 +226,37 @@ def test_interrupted_scan_keeps_progress(tmp_path):
         scanner.analyze_file = saved
     assert len(result) == 60
     assert len(analyzed) <= 10  # only the files not reached before the interruption
+
+
+def test_duplicates_on_server(dirs, tmp_path):
+    from photo_sync.duplicates import EXACT as D_EXACT, SIMILAR as D_SIMILAR, find_duplicates
+
+    _, server = dirs
+    original = make_photo(server / "2020" / "a.jpg", 20, taken="2020:01:01 10:00:00")
+    (server / "backup").mkdir()
+    shutil.copy2(original, server / "backup" / "a.jpg")
+    (server / "small").mkdir()
+    with Image.open(original) as img:
+        img.resize((160, 120)).save(server / "small" / "a_small.jpg", quality=70, exif=img.getexif())
+    make_photo(server / "other.jpg", 21, taken="2021:01:01 10:00:00")
+    # Burst shot: same picture, different time -> not a duplicate.
+    make_photo(server / "burst.jpg", 20, taken="2020:01:01 10:00:05", quality=80)
+
+    groups = find_duplicates(scan(server))
+    kinds = sorted(g.kind for g in groups)
+    assert kinds == [D_EXACT, D_SIMILAR]
+    exact = next(g for g in groups if g.kind == D_EXACT)
+    assert {Path(i.path).parent.name for i in exact.images} == {"2020", "backup"}
+    similar = next(g for g in groups if g.kind == D_SIMILAR)
+    assert len(similar.images) == 2
+    assert similar.keep.width == 320  # higher resolution is suggested to keep
+
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text(
+        f"local:\n  paths: ['{dirs[0].as_posix()}']\n"
+        f"server:\n  paths: ['{server.as_posix()}']\n  upload_path: '{(server / 'up').as_posix()}'\n",
+        encoding="utf-8",
+    )
+    assert main(["-c", str(cfg), "duplicates"]) == 0
+    assert list((tmp_path / "reports").glob("duplicates-*.html"))
+    assert (server / "backup" / "a.jpg").exists()  # nothing deleted
