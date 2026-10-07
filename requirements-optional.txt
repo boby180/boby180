@@ -1,0 +1,2 @@
+# Support for iPhone HEIC photos (installed separately so a failure here does not block the rest)
+pillow-heif>=0.13
