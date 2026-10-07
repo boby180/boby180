@@ -279,3 +279,60 @@ td img {{ width: 120px; max-height: 120px; object-fit: contain; display: block; 
         encoding="utf-8",
     )
     return {"csv": csv_path, "html": html_path}
+
+
+ENHANCE_LABELS = {
+    "enhanced": "שופרה",
+    "skipped-not-underwater": "לא תת-ימית - דולגה",
+    "skipped-exists": "כבר קיימת - דולגה",
+    "failed": "שגיאה",
+}
+
+
+def write_enhance_report(results, report_dir: str | Path) -> Path:
+    report_dir = Path(report_dir)
+    report_dir.mkdir(parents=True, exist_ok=True)
+    path = report_dir / f"enhance-{datetime.now():%Y%m%d-%H%M%S}.html"
+    counts: dict[str, int] = {}
+    for r in results:
+        counts[r.status] = counts.get(r.status, 0) + 1
+    rows = []
+    for r in results:
+        if r.status not in ("enhanced", "skipped-exists"):
+            continue
+        rows.append(
+            f"<div class='pair'><div>{_thumb(r.source)}<span>לפני</span></div>"
+            f"<div>{_thumb(r.target)}<span>אחרי</span></div>"
+            f"<p>{html.escape(r.source)}</p></div>"
+        )
+    failed = "".join(
+        f"<li>{html.escape(r.source)}: {html.escape(r.detail)}</li>" for r in results if r.status == "failed"
+    )
+    cards = "".join(
+        f"<div class='card'><b>{n}</b>{html.escape(ENHANCE_LABELS.get(k, k))}</div>" for k, n in counts.items()
+    )
+    path.write_text(
+        f"""<!doctype html>
+<html lang="he" dir="rtl"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>שיפור תמונות תת-ימיות</title>
+<style>
+body {{ font-family: system-ui, sans-serif; margin: 16px; background: #fff; color: #222; }}
+.cards {{ display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 16px; }}
+.card {{ border: 1px solid #ddd; border-radius: 8px; padding: 8px 14px; }}
+.card b {{ font-size: 22px; display: block; }}
+.pair {{ display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-start; border-bottom: 1px solid #ddd; padding: 10px 0; }}
+.pair > div {{ text-align: center; }}
+.pair img {{ width: 420px; max-width: 45vw; display: block; background: #f6f6f6; }}
+.pair p {{ flex-basis: 100%; margin: 4px 0 0; font-size: 12px; color: #666; overflow-wrap: anywhere; }}
+</style></head><body>
+<h1>שיפור תמונות תת-ימיות</h1>
+<p>המקור לא שונה. התמונות המשופרות נשמרו בתיקייה נפרדת. לחיצה על תמונה פותחת אותה בגודל מלא.</p>
+<div class="cards">{cards}</div>
+{"<h2>שגיאות</h2><ul>" + failed + "</ul>" if failed else ""}
+{chr(10).join(rows)}
+</body></html>
+""",
+        encoding="utf-8",
+    )
+    return path

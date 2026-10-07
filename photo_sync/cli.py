@@ -10,12 +10,14 @@ from __future__ import annotations
 
 import argparse
 import sys
+from pathlib import Path
 
 from .cache import ScanCache
 from .compare import EXACT, MISSING, SIMILAR, compare_images, summarize
 from .config import Config, ConfigError, load_config
+from .enhance import enhance_folder
 from .duplicates import EXACT as DUP_EXACT, find_duplicates
-from .report import write_compare_report, write_duplicates_report, write_upload_report
+from .report import write_compare_report, write_enhance_report, write_duplicates_report, write_upload_report
 from .scanner import ImageInfo, imagehash, scan_folder
 from .uploader import make_uploader, upload_missing
 
@@ -142,6 +144,26 @@ def cmd_duplicates(config: Config, args) -> int:
     return 0
 
 
+def cmd_enhance(config: Config, args) -> int:
+    source = Path(args.source)
+    if not source.is_dir():
+        raise ConfigError(f"Folder not found: {source}")
+    output = Path(args.output) if args.output else Path(config.output.report_dir).parent / "enhanced"
+    print(f"Enhancing underwater photos in: {source}")
+    print(f"Corrected copies go to:         {output / source.name}  (originals are not changed)")
+    results = enhance_folder(
+        source, output, config.compare.extensions, config.compare.exclude,
+        strength=args.strength, only_underwater=not args.all, progress=_progress("photos"),
+    )
+    counts: dict[str, int] = {}
+    for r in results:
+        counts[r.status] = counts.get(r.status, 0) + 1
+    print("\nSummary:", ", ".join(f"{k}={v}" for k, v in counts.items()) or "no photos found")
+    report = write_enhance_report(results, config.output.report_dir)
+    print(f"Before/after report: {report}")
+    return 1 if counts.get("failed") else 0
+
+
 def main(argv: list[str] | None = None) -> int:
     # Hebrew file names must not crash printing on a Windows console with a legacy code page.
     for stream in (sys.stdout, sys.stderr):
@@ -158,13 +180,18 @@ def main(argv: list[str] | None = None) -> int:
     dup = sub.add_parser("duplicates", help="find duplicate photos (report only, nothing is deleted)")
     dup.add_argument("--where", choices=["server", "computer", "all"], default="server",
                      help="where to look for duplicates (default: server)")
+    enh = sub.add_parser("enhance", help="colour-correct underwater photos into a separate folder")
+    enh.add_argument("source", help="folder with the photos to enhance")
+    enh.add_argument("--output", help="where to write the corrected copies (default: 'enhanced' next to the config)")
+    enh.add_argument("--strength", type=float, default=1.0, help="0.5 = gentle, 1 = normal (default), 1.3 = strong")
+    enh.add_argument("--all", action="store_true", help="also process photos that do not look underwater")
     up = sub.add_parser("upload", help="upload photos that are missing on the server")
     up.add_argument("--execute", action="store_true", help="really upload (default is a dry run)")
     up.add_argument("--include-better", action="store_true",
                     help="also upload photos whose copy on the server is of lower quality")
     args = parser.parse_args(argv)
 
-    handlers = {"check": cmd_check, "compare": cmd_compare, "upload": cmd_upload, "duplicates": cmd_duplicates}
+    handlers = {"check": cmd_check, "compare": cmd_compare, "upload": cmd_upload, "duplicates": cmd_duplicates, "enhance": cmd_enhance}
     try:
         config = load_config(args.config)
         return handlers[args.command](config, args)

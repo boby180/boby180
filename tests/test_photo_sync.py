@@ -283,3 +283,41 @@ def test_better_quality_on_computer_can_be_uploaded(dirs):
     records = upload_missing(results, uploader, dry_run=False, log=log, include_better=True)
     assert sorted(Path(r["local"]).name for r in records if r["status"] == "uploaded") == ["new.jpg", "trip.jpg"]
     assert (server / "trip_small.jpg").exists()  # the server copy is kept
+
+
+def test_enhance_underwater_photos(tmp_path):
+    import numpy as np
+    from photo_sync.enhance import enhance_folder, looks_underwater
+
+    src = tmp_path / "dive"
+    land = make_photo(src / "land.jpg", 40)
+    # Simulate water: red absorbed, blue-green haze.
+    with Image.open(land) as img:
+        arr = np.asarray(img, dtype=np.float32) / 255
+    water = arr * np.array([0.3, 0.8, 0.9]) * 0.6 + np.array([0.05, 0.45, 0.55]) * 0.4
+    uw_path = src / "fish.jpg"
+    exif = Image.Exif()
+    exif.get_ifd(0x8769)[0x9003] = "2002:03:21 14:38:19"
+    Image.fromarray((water * 255).astype("uint8")).save(uw_path, exif=exif)
+    before = uw_path.read_bytes()
+
+    with Image.open(uw_path) as img:
+        assert looks_underwater(img)
+    with Image.open(land) as img:
+        assert not looks_underwater(img)
+
+    results = {Path(r.source).name: r for r in enhance_folder(src, tmp_path / "out", EXTS, EXCLUDE)}
+    assert results["fish.jpg"].status == "enhanced"
+    assert results["land.jpg"].status == "skipped-not-underwater"
+    assert uw_path.read_bytes() == before  # original untouched
+
+    out = tmp_path / "out" / "dive" / "fish.jpg"
+    (info,) = scan(out.parent)
+    assert info.taken == "2002-03-21 14:38:19"  # metadata kept
+    with Image.open(out) as img:
+        r, g, b = (np.asarray(img, dtype=np.float32)[..., i].mean() for i in range(3))
+    assert r > 0.6 * max(g, b)  # the red cast is corrected
+
+    # Running again does not overwrite.
+    again = enhance_folder(src, tmp_path / "out", EXTS, EXCLUDE)
+    assert {r.status for r in again} == {"skipped-exists", "skipped-not-underwater"}

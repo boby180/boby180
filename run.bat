@@ -26,6 +26,7 @@ echo   4. Upload missing photos - FOR REAL
 echo   5. Edit settings - config.yaml
 echo   6. Open reports folder
 echo   7. Find duplicate photos on the server - report only
+echo   8. Enhance underwater photos - copies to a new folder
 echo   0. Exit
 echo ====================================================
 set "CHOICE="
@@ -37,6 +38,7 @@ if "%CHOICE%"=="4" goto upload
 if "%CHOICE%"=="5" goto edit
 if "%CHOICE%"=="6" goto reports
 if "%CHOICE%"=="7" goto duplicates
+if "%CHOICE%"=="8" goto enhance
 if "%CHOICE%"=="0" goto end
 goto menu
 
@@ -57,6 +59,21 @@ goto menu
 "%PY%" -m photo_sync duplicates
 if errorlevel 1 goto menu
 for /f "delims=" %%F in ('dir /b /o-d "reports\duplicates-*.html" 2^>nul') do (
+    start "" "reports\%%F"
+    goto menu
+)
+goto menu
+
+:enhance
+echo.
+echo Drag the folder with the underwater photos into this window, then press Enter.
+set "FOLDER="
+set /p "FOLDER=Folder: "
+if not defined FOLDER goto menu
+set "FOLDER=%FOLDER:"=%"
+"%PY%" -m photo_sync enhance "%FOLDER%"
+if errorlevel 1 goto menu
+for /f "delims=" %%F in ('dir /b /o-d "reports\enhance-*.html" 2^>nul') do (
     start "" "reports\%%F"
     goto menu
 )
