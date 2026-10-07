@@ -170,3 +170,20 @@ def test_config_errors(tmp_path):
     ok.write_text("local:\n  paths: [/nope]\nserver:\n  path: /nope2\n", encoding="utf-8")
     with pytest.raises(ConfigError):
         load_config(ok).validate()
+
+
+def test_hebrew_folder_names(tmp_path):
+    local, server = tmp_path / "cd rom", tmp_path / "nas"
+    server.mkdir()
+    path = make_photo(local / "סוכות באילת" / "תמונה 1.jpg", 12)
+    # Windows Explorer stores Hebrew title/comment in the UTF-16 XP tags.
+    with Image.open(path) as img:
+        exif = img.getexif()
+        exif[0x9C9B] = "אילת".encode("utf-16-le") + b"\x00\x00"
+        exif[0x9C9C] = "חוף הים".encode("utf-16-le") + b"\x00\x00"
+        img.save(path, exif=exif)
+    (result,) = compare_images(scan(local), scan(server))
+    assert result.status == MISSING
+    assert result.local.rel_path == "סוכות באילת/תמונה 1.jpg"
+    assert result.local.description == "חוף הים"
+    assert result.local.title == "אילת"

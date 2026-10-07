@@ -102,6 +102,10 @@ def cmd_upload(config: Config, args) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # Hebrew file names must not crash printing on a Windows console with a legacy code page.
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(errors="replace")
     parser = argparse.ArgumentParser(
         prog="photo_sync",
         description="Compare photos on this computer with a Synology NAS and upload what is missing.",
