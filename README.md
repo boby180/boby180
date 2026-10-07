@@ -68,6 +68,18 @@ python -m photo_sync upload               # הרצת ניסיון: מציג מה
 python -m photo_sync upload --execute     # העלאה בפועל
 ```
 
+### גרסה טובה יותר במחשב
+
+לפעמים בשרת יש רק עותק דחוס או מוקטן של תמונה (למשל עותק מ-Google Photos), ובמחשב יש את המקור.
+בדוח, העמודה "איכות טובה יותר" מראה איפה הגרסה הטובה. כדי להעלות גם את הגרסאות האלה:
+
+```bash
+python -m photo_sync upload --include-better             # הרצת ניסיון
+python -m photo_sync upload --include-better --execute   # העלאה בפועל
+```
+
+העותק הקיים בשרת לא נמחק. אחר כך אפשר למצוא אותו עם `duplicates`.
+
 ## תמונות כפולות
 
 ```bash

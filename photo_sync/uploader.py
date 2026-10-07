@@ -23,7 +23,7 @@ from typing import Callable
 
 import requests
 
-from .compare import MISSING, MatchResult
+from .compare import BETTER_COMPUTER, MISSING, MatchResult, better_copy
 from .config import Config
 
 
@@ -157,15 +157,23 @@ def upload_missing(
     uploader,
     dry_run: bool = True,
     log: Callable[[str], None] = print,
+    include_better: bool = False,
 ) -> list[dict]:
-    """Upload every ``missing`` photo once (local duplicates are uploaded a single time)."""
+    """Upload every ``missing`` photo once (local duplicates are uploaded a single time).
+
+    With ``include_better``, also upload photos whose server copy is of lower
+    quality. The server copy is kept; the duplicates report can be used later
+    to remove the weaker one.
+    """
     done_hashes: dict[str, str] = {}
     records = []
     for r in results:
-        if r.status != MISSING:
+        better = include_better and better_copy(r) == BETTER_COMPUTER
+        if r.status != MISSING and not better:
             continue
         rel = target_relative_path(r)
-        record = {"local": r.local.path, "target": rel, "status": "", "detail": ""}
+        reason = f"better quality than {r.server.path}" if better else "missing"
+        record = {"local": r.local.path, "target": rel, "status": "", "detail": reason}
         if r.local.sha256 and r.local.sha256 in done_hashes:
             record.update(status="skipped", detail=f"duplicate of {done_hashes[r.local.sha256]}")
         elif dry_run:
@@ -176,7 +184,7 @@ def upload_missing(
                 record.update(status="uploaded", target=uploader.upload(r.local.path, rel))
                 log(f"uploaded  {r.local.path} -> {record['target']}")
             except Exception as exc:
-                record.update(status="failed", detail=str(exc))
+                record.update(status="failed", detail=f"{reason}; error: {exc}")
                 log(f"FAILED    {r.local.path}: {exc}")
         if r.local.sha256 and record["status"] in ("uploaded", "would-upload"):
             done_hashes[r.local.sha256] = r.local.path

@@ -7,7 +7,9 @@ import html
 from datetime import datetime
 from pathlib import Path
 
-from .compare import EXACT, MISSING, SIMILAR, MatchResult, summarize
+from .compare import (
+    BETTER_COMPUTER, BETTER_SAME, BETTER_SERVER, EXACT, MISSING, SIMILAR, MatchResult, better_copy, summarize,
+)
 
 STATUS_LABELS = {
     EXACT: "קיים בשרת (זהה)",
@@ -15,8 +17,10 @@ STATUS_LABELS = {
     MISSING: "חסר בשרת",
 }
 
+BETTER_LABELS = {BETTER_COMPUTER: "במחשב", BETTER_SERVER: "בשרת", BETTER_SAME: "שווה"}
+
 COLUMNS = [
-    "status", "status_he", "local_path", "server_path", "distance", "name_on_server",
+    "status", "status_he", "better_copy", "local_path", "server_path", "distance", "name_on_server",
     "differences", "size", "width", "height", "taken", "camera", "title", "description",
     "keywords", "sha256", "phash", "error",
 ]
@@ -27,6 +31,7 @@ def _row(r: MatchResult) -> dict:
     return {
         "status": r.status,
         "status_he": STATUS_LABELS[r.status],
+        "better_copy": better_copy(r) or "",
         "local_path": img.path,
         "server_path": r.server.path if r.server else "",
         "distance": "" if r.distance is None else r.distance,
@@ -77,11 +82,13 @@ def write_html(results: list[MatchResult], path: Path) -> None:
     for r in sorted(results, key=lambda r: (order[r.status], r.local.path)):
         d = _row(r)
         rows.append(
-            "<tr class='{status}'><td>{label}</td><td>{local_img}<div>{local}</div></td>"
+            "<tr class='{status}{better_class}'><td>{label}</td><td>{better}</td><td>{local_img}<div>{local}</div></td>"
             "<td>{server_img}<div>{server}</div></td><td>{distance}</td>"
             "<td>{taken}</td><td>{desc}</td><td>{diffs}</td></tr>".format(
                 status=r.status,
                 label=html.escape(d["status_he"]),
+                better_class=" better-computer" if d["better_copy"] == BETTER_COMPUTER else "",
+                better=BETTER_LABELS.get(d["better_copy"], ""),
                 local_img=_thumb(d["local_path"]),
                 local=html.escape(d["local_path"]),
                 server_img=_thumb(d["server_path"]),
@@ -115,15 +122,17 @@ td img {{ width: 120px; max-height: 120px; object-fit: contain; display: block; 
 </style></head><body>
 <h1>השוואת תמונות: מחשב מול שרת</h1>
 <p>נוצר ב-{datetime.now():%Y-%m-%d %H:%M}. לחיצה על כרטיס מסננת את הטבלה; לחיצה על תמונה פותחת אותה בגודל מלא.
-"מרחק חזותי": 0 = נראות זהות, ככל שהמספר גבוה יותר ההבדל גדול יותר.</p>
+"מרחק חזותי": 0 = נראות זהות, ככל שהמספר גבוה יותר ההבדל גדול יותר.
+"איכות טובה יותר": יותר פיקסלים, או באותה רזולוציה - קובץ גדול יותר (פחות דחוס).</p>
 <div class="cards">
 <button class="card active" data-filter="all"><b>{len(results)}</b>תמונות במחשב</button>
 <button class="card" data-filter="exact"><b>{summary[EXACT]}</b>{STATUS_LABELS[EXACT]}</button>
 <button class="card" data-filter="similar"><b>{summary[SIMILAR]}</b>{STATUS_LABELS[SIMILAR]}</button>
+<button class="card" data-filter="better-computer"><b>{summary['better_on_computer']}</b>דומה, אבל במחשב באיכות טובה יותר</button>
 <button class="card" data-filter="missing"><b>{summary[MISSING]}</b>{STATUS_LABELS[MISSING]}</button>
 <div class="card"><b>{summary['errors']}</b>שגיאות קריאה</div>
 </div>
-<table><thead><tr><th>סטטוס</th><th>קובץ במחשב</th><th>התאמה בשרת</th><th>מרחק חזותי</th><th>תאריך צילום</th>
+<table><thead><tr><th>סטטוס</th><th>איכות טובה יותר</th><th>קובץ במחשב</th><th>התאמה בשרת</th><th>מרחק חזותי</th><th>תאריך צילום</th>
 <th>תיאור</th><th>הבדלים</th></tr></thead>
 <tbody>
 {chr(10).join(rows)}

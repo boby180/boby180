@@ -62,7 +62,9 @@ def _run_compare(config: Config):
     print()
     print(f"Photos on computer: {len(local)}   photos on server: {len(server)}")
     for status in (EXACT, SIMILAR, MISSING):
-        print(f"  {CONSOLE_LABELS[status]:<34} {summary[status]}")
+        print(f"  {CONSOLE_LABELS[status]:<38} {summary[status]}")
+        if status == SIMILAR:
+            print(f"    {'of these, better quality on computer':<36} {summary['better_on_computer']}")
     if summary["errors"]:
         print(f"  read errors: {summary['errors']}")
     return results
@@ -97,7 +99,7 @@ def cmd_upload(config: Config, args) -> int:
     dry_run = not args.execute
     uploader = None if dry_run else make_uploader(config)
     try:
-        records = upload_missing(results, uploader, dry_run=dry_run)
+        records = upload_missing(results, uploader, dry_run=dry_run, include_better=args.include_better)
     finally:
         if uploader is not None:
             uploader.close()
@@ -158,6 +160,8 @@ def main(argv: list[str] | None = None) -> int:
                      help="where to look for duplicates (default: server)")
     up = sub.add_parser("upload", help="upload photos that are missing on the server")
     up.add_argument("--execute", action="store_true", help="really upload (default is a dry run)")
+    up.add_argument("--include-better", action="store_true",
+                    help="also upload photos whose copy on the server is of lower quality")
     args = parser.parse_args(argv)
 
     handlers = {"check": cmd_check, "compare": cmd_compare, "upload": cmd_upload, "duplicates": cmd_duplicates}

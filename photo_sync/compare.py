@@ -135,10 +135,37 @@ def compare_images(
     return results
 
 
+BETTER_COMPUTER = "computer"
+BETTER_SERVER = "server"
+BETTER_SAME = "same"
+
+
+def better_copy(result: MatchResult) -> str | None:
+    """For a ``similar`` match: which copy has the better quality.
+
+    More pixels wins; at the same resolution, a clearly bigger file (less
+    compression, e.g. vs. a Google Photos "storage saver" copy) wins.
+    """
+    if result.status != SIMILAR or result.server is None:
+        return None
+    local, server = result.local, result.server
+    pixels_local = (local.width or 0) * (local.height or 0)
+    pixels_server = (server.width or 0) * (server.height or 0)
+    if pixels_local and pixels_server and abs(pixels_local - pixels_server) > 0.01 * max(pixels_local, pixels_server):
+        return BETTER_COMPUTER if pixels_local > pixels_server else BETTER_SERVER
+    if local.size > server.size * 1.1:
+        return BETTER_COMPUTER
+    if server.size > local.size * 1.1:
+        return BETTER_SERVER
+    return BETTER_SAME
+
+
 def summarize(results: list[MatchResult]) -> dict[str, int]:
-    summary = {EXACT: 0, SIMILAR: 0, MISSING: 0, "errors": 0}
+    summary = {EXACT: 0, SIMILAR: 0, MISSING: 0, "errors": 0, "better_on_computer": 0}
     for r in results:
         summary[r.status] += 1
         if r.local.error:
             summary["errors"] += 1
+        if better_copy(r) == BETTER_COMPUTER:
+            summary["better_on_computer"] += 1
     return summary

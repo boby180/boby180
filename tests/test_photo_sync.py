@@ -260,3 +260,26 @@ def test_duplicates_on_server(dirs, tmp_path):
     assert main(["-c", str(cfg), "duplicates"]) == 0
     assert list((tmp_path / "reports").glob("duplicates-*.html"))
     assert (server / "backup" / "a.jpg").exists()  # nothing deleted
+
+
+def test_better_quality_on_computer_can_be_uploaded(dirs):
+    from photo_sync.compare import BETTER_COMPUTER, better_copy
+
+    local, server = dirs
+    original = make_photo(local / "trip.jpg", 30, taken="2022:02:02 12:00:00")
+    with Image.open(original) as img:  # server only has a smaller version
+        img.resize((160, 120)).save(server / "trip_small.jpg", quality=70, exif=img.getexif())
+    make_photo(local / "new.jpg", 31)
+
+    results = compare_images(scan(local), scan(server))
+    similar = next(r for r in results if r.status == SIMILAR)
+    assert better_copy(similar) == BETTER_COMPUTER
+
+    log = lambda m: None
+    plain = upload_missing(results, None, dry_run=True, log=log)
+    assert [Path(r["local"]).name for r in plain] == ["new.jpg"]
+
+    uploader = CopyUploader(str(server / "up"))
+    records = upload_missing(results, uploader, dry_run=False, log=log, include_better=True)
+    assert sorted(Path(r["local"]).name for r in records if r["status"] == "uploaded") == ["new.jpg", "trip.jpg"]
+    assert (server / "trip_small.jpg").exists()  # the server copy is kept
