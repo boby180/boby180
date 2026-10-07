@@ -2,7 +2,6 @@
 rem Photo Sync - double-click this file to install (first time) and run.
 setlocal
 cd /d "%~dp0"
-chcp 65001 >nul
 title Photo Sync
 
 set "PY=.venv\Scripts\python.exe"
