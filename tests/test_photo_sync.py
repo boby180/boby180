@@ -379,3 +379,36 @@ def test_dedupe_refuses_folders_outside_server(tmp_path):
         encoding="utf-8",
     )
     assert main(["-c", str(cfg), "dedupe", "--from", other.as_posix(), "--execute"]) == 2
+
+
+def _img(path, sha="x", width=100):
+    from photo_sync.scanner import ImageInfo
+    p = path.replace("\\", "/")
+    return ImageInfo(path=path, rel_path=p.split("/", 5)[-1], root="//NAS/home/Photos", name=p.rsplit("/", 1)[-1],
+                     size=10, mtime=0, sha256=sha, width=width, height=width)
+
+
+def test_plan_moves_keep_one_inside_and_never_move():
+    from photo_sync.dedupe import plan_moves, review_target
+    from photo_sync.duplicates import EXACT as D_EXACT, DuplicateGroup
+
+    shared = _img("//NAS/photo/2019/a.jpg")
+    lib_a = _img("//NAS/home/Photos/g-drive/a.jpg")
+    lib_b = _img("//NAS/home/Photos/my-olimpus/a.jpg")
+    phone = _img("//NAS/home/Photos/MobileBackup/a.jpg")
+    group = DuplicateGroup(D_EXACT, [shared, lib_a, lib_b])
+    lib = ["//NAS/home/Photos"]
+
+    # Default: copies exist outside the library, so all library copies go.
+    assert {p.source.path for p in plan_moves([group], lib)} == {lib_a.path, lib_b.path}
+    # keep-one-inside: the library keeps exactly one copy.
+    plans = plan_moves([group], lib, keep_one_inside=True)
+    assert [p.source.path for p in plans] == [lib_b.path] and plans[0].kept is lib_a
+    # The phone backup is never moved and becomes the copy that is kept.
+    group2 = DuplicateGroup(D_EXACT, [lib_a, phone, lib_b])
+    plans = plan_moves([group2], lib, never_move=["//NAS/home/Photos/MobileBackup"], keep_one_inside=True)
+    assert {p.source.path for p in plans} == {lib_a.path, lib_b.path}
+    assert all(p.kept is phone for p in plans)
+
+    # On a NAS share the review folder is at the top of the share, outside the Photos library.
+    assert review_target(lib_b).replace("\\", "/") == "//NAS/home/_duplicates_to_review/Photos/my-olimpus/a.jpg"

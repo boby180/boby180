@@ -106,8 +106,16 @@ python -m photo_sync undo-dedupe "reports/dedupe-....csv"                 # לה
 
 * רק עותקים **זהים לחלוטין** מטופלים, ורק בתוך התיקיות שנבחרו עם `--from`.
 * תמיד נשאר לפחות עותק אחד של כל תמונה.
-* שום דבר לא נמחק: העותקים **מועברים** לתיקייה `_duplicates_to_review` באותה תיקייה משותפת.
-  אחרי שבודקים אותה, אפשר למחוק אותה ידנית. עד אז `undo-dedupe` מחזיר הכול למקום.
+* שום דבר לא נמחק: העותקים **מועברים** לתיקייה `_duplicates_to_review` בראש אותה תיקייה משותפת
+  (למשל `home/_duplicates_to_review`, מחוץ לספריית Synology Photos). אחרי שבודקים אותה, אפשר למחוק אותה ידנית.
+  עד אז `undo-dedupe` מחזיר הכול למקום.
+* `--except` - תיקייה שממנה לעולם לא מעבירים (למשל גיבוי הטלפון).
+* `--keep-one-inside` - משאיר עותק אחד בתוך תיקיות ה-`--from` גם אם יש עותקים במקומות אחרים.
+  כך מנקים כפולים בתוך ספריית Synology Photos בלי לרוקן אותה:
+
+```bash
+python -m photo_sync dedupe --from "//NAS/home/Photos" --except "//NAS/home/Photos/MobileBackup" --keep-one-inside
+```
 
 ## שיפור תמונות תת-ימיות
 

@@ -164,7 +164,7 @@ def cmd_dedupe(config: Config, args) -> int:
         images = _scan(config, cache, server_roots, "server")
     print("Looking for identical copies...")
     groups = find_duplicates(images, include_similar=False)
-    plans = plan_moves(groups, args.from_folders)
+    plans = plan_moves(groups, args.from_folders, args.except_folders, args.keep_one_inside)
 
     by_location: dict[str, list[int]] = {}
     for p in plans:
@@ -175,7 +175,7 @@ def cmd_dedupe(config: Config, args) -> int:
     print(f"\nIdentical copies to move out of the chosen folders: {len(plans)} files, {total_mb:.0f} MB")
     for loc, (count, size) in sorted(by_location.items(), key=lambda kv: -kv[1][1]):
         print(f"  {size / 1024 / 1024:8.0f} MB  {count:6} files  from: {loc}")
-    print(f"Each one stays available elsewhere; moved files go to '{REVIEW_DIR}' in the same shared folder.")
+    print(f"Each one stays available elsewhere; moved files go to '{REVIEW_DIR}' at the top of the same shared folder.")
 
     if not args.execute:
         for p in plans[:10]:
@@ -243,6 +243,10 @@ def main(argv: list[str] | None = None) -> int:
     ded = sub.add_parser("dedupe", help="move identical copies out of chosen server folders (dry run by default)")
     ded.add_argument("--from", dest="from_folders", action="append", required=True, metavar="FOLDER",
                      help="server folder to remove copies from (repeatable); a copy always stays elsewhere")
+    ded.add_argument("--except", dest="except_folders", action="append", default=[], metavar="FOLDER",
+                     help="never move files from this folder, e.g. the phone backup (repeatable)")
+    ded.add_argument("--keep-one-inside", action="store_true",
+                     help="keep one copy inside the --from folders even if other copies exist elsewhere")
     ded.add_argument("--execute", action="store_true", help="really move the files (default is a dry run)")
     und = sub.add_parser("undo-dedupe", help="put back files moved by dedupe, using its log")
     und.add_argument("log", help="the dedupe-....csv log file from the reports folder")

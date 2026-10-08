@@ -44,23 +44,56 @@ class MovePlan:
     kept: ImageInfo
 
 
-def plan_moves(groups: list[DuplicateGroup], remove_from: Iterable[str]) -> list[MovePlan]:
+def review_target(img: ImageInfo) -> str:
+    """Where a duplicate is moved to.
+
+    On a NAS share (\\\\server\\share\\...) the review folder sits at the top of
+    the share, so the move stays a fast server-side rename *and* the files leave
+    folders that apps index (e.g. Synology Photos shows everything under
+    home/Photos, so a review folder there would still show the duplicates).
+    """
+    p = img.path.replace("\\", "/")
+    if p.startswith("//"):
+        parts = p[2:].split("/")
+        if len(parts) > 2:
+            share_root = "//" + parts[0] + "/" + parts[1]
+            return os.path.join(share_root, REVIEW_DIR, *parts[2:])
+    return os.path.join(img.root, REVIEW_DIR, *img.rel_path.split("/"))
+
+
+def plan_moves(
+    groups: list[DuplicateGroup],
+    remove_from: Iterable[str],
+    never_move: Iterable[str] = (),
+    keep_one_inside: bool = False,
+) -> list[MovePlan]:
+    """Plan which identical copies to move out of ``remove_from``.
+
+    ``never_move``: folders whose files always stay (e.g. the phone backup).
+    ``keep_one_inside``: keep one copy inside ``remove_from`` even when other
+    copies exist elsewhere - removes duplicates *within* a folder tree (such as
+    a Synology Photos library) without emptying it.
+    """
     folders = [_norm(f) for f in remove_from]
+    protected = [_norm(f) for f in never_move]
     plans = []
     for group in groups:
         if group.kind != EXACT:
             continue
-        removable = [i for i in group.images if is_under(i.path, folders)]
+        inside = [i for i in group.images if is_under(i.path, folders)]
+        removable = [i for i in inside if not is_under(i.path, protected)]
         if not removable:
             continue
-        keepers = [i for i in group.images if not is_under(i.path, folders)]
-        if keepers:
-            kept = keepers[0]  # images are sorted best first
+        protected_inside = [i for i in inside if is_under(i.path, protected)]
+        outside = [i for i in group.images if i not in inside]
+        if protected_inside:
+            kept = protected_inside[0]
+        elif outside and not keep_one_inside:
+            kept = outside[0]  # images are sorted best first
         else:
             kept, removable = removable[0], removable[1:]  # never remove the last copy
         for img in removable:
-            target = os.path.join(img.root, REVIEW_DIR, *img.rel_path.split("/"))
-            plans.append(MovePlan(img, target, kept))
+            plans.append(MovePlan(img, review_target(img), kept))
     return plans
 
 
