@@ -147,3 +147,30 @@ def test_in_target_from_sr():
     nt.p["X"]["SR"] = 0x20
     assert wait_for(lambda: link.axes[0].in_target)
     link.close()
+
+
+def test_version_pe_and_macro_status():
+    nt, link, logs = connected_link()
+    assert link.firmware == "SC-4M_P,300,4,300,250"
+    nt.p["Z"]["PE"] = -7
+    nt.qf = {1: 0b0101, 3: 0b0100}
+    assert wait_for(lambda: link.axes[2].pe == -7)
+    assert link.axes[0].macro_running and not link.axes[1].macro_running
+    assert link.axes[2].macro_rte and not link.axes[0].macro_rte
+    link.close()
+
+
+def test_home_macro_per_axis_servo_and_flash():
+    nt, link, _ = connected_link()
+    link.home_macro = "#HOME_{L}"
+    assert link.home(1)
+    assert wait_for(lambda: "YQE,#HOME_Y" in nt.received)
+    assert not link.run_macro(0, "#TOOLONGNAME")
+    link.set_axis_servo(3, True)
+    assert wait_for(lambda: link.axes[3].motor_on)
+    assert not link.axes[0].motor_on
+    assert link.move_to(3, 1.0) and not link.move_to(0, 1.0)
+    link.kill_macros()
+    link.save_flash()
+    assert wait_for(lambda: "XQK" in nt.received and "XSV" in nt.received)
+    link.close()

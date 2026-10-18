@@ -10,14 +10,14 @@ from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QColor, QFont, QPainter, QPalette
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDoubleSpinBox, QFrame, QGridLayout, QGroupBox, QHBoxLayout,
-    QHeaderView, QLabel, QLineEdit, QMainWindow, QPlainTextEdit, QPushButton, QScrollArea, QSizePolicy, QSlider,
+    QHeaderView, QLabel, QLineEdit, QMainWindow, QMessageBox, QPlainTextEdit, QPushButton, QScrollArea, QSizePolicy, QSlider,
     QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
 from .link import LinkController
 from .model import (
     END_MOTION_REASONS, HW_MARGIN, INPUT_NAMES, MOTOR_FAULTS, N_BITS, N_OUTPUTS, OUTPUT_NAMES, SETTINGS_FILE, STATUS_BITS, Axis,
-    SimController, app_dir, load_settings, save_settings,
+    DEFAULT_HOME_MACRO, SimController, app_dir, load_app_settings, load_settings, save_settings,
 )
 from .protocol import LAN_PORTS, SERIAL_BAUDS, LanTransport, SerialTransport
 from .version import __version__
@@ -111,6 +111,18 @@ class AxisPanel(QGroupBox):
         self.readout.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         self.readout.setLayoutDirection(Qt.LeftToRight)
         self.readout.setStyleSheet("background:#eef1f4; color:#111820; border:1px solid #c9d1da; border-radius:6px; padding:4px 10px;")
+        top = QHBoxLayout()
+        self.servo_btn = QPushButton()
+        self.servo_btn.setMinimumWidth(110)
+        self.servo_btn.clicked.connect(lambda: self.win.ctrl.set_axis_servo(self.i, not self.axis.motor_on))
+        self.macro_led = Led()
+        self.macro_lbl = QLabel("מאקרו")
+        self.macro_lbl.setStyleSheet("color:#5d6b7a;")
+        top.addWidget(self.servo_btn)
+        top.addStretch(1)
+        top.addWidget(self.macro_lbl)
+        top.addWidget(self.macro_led)
+        lay.addLayout(top)
         lay.addWidget(self.readout)
 
         self.sub1, self.sub2, self.sub3 = QLabel(), QLabel(), QLabel()
@@ -178,11 +190,27 @@ class AxisPanel(QGroupBox):
         self.sub1.setText(f"יעד: {target}    מהירות: {a.vel:+.1f} °/ש'")
         self.sub2.setText(f"ביטים: {a.bits():,}    קבוע: {a.cfg.bits_per_deg:g} ביט/°")
         self.range_lbl.setText(f"{LRM}{a.cfg.min:g}°  …  {a.cfg.max:g}°")
+        on = a.motor_on
+        if on != getattr(self, "_servo_shown", None):
+            self._servo_shown = on
+            self.servo_btn.setText("Servo ON" if on else "Servo OFF")
+            self.servo_btn.setStyleSheet(
+                f"QPushButton {{ background:{'#1f9d55' if on else '#d62f2f'}; color:white; font-weight:bold;"
+                " border-radius:4px; padding:4px 10px; }")
+        if a.macro_running is None:
+            self.macro_led.set("off")
+            self.macro_lbl.setToolTip("")
+        else:
+            self.macro_led.set("bad" if a.macro_rte else "on" if a.macro_running else "off")
+            self.macro_lbl.setToolTip(f"מאקרו {a.letter}: " + ("נעצר בשגיאה" if a.macro_rte else
+                                      "רץ" if a.macro_running else "לא רץ"))
         if a.ms is None:
-            self.sub3.setText("מנוע: " + ("פעיל" if a.motor_on else "כבוי"))
+            self.sub3.setText("")
         else:
             em = "—" if a.em is None else f"{a.em} {END_MOTION_REASONS.get(a.em, '')}".strip()
-            parts = [f"מנוע: {'פעיל' if a.motor_on else 'כבוי'}", f"MS: {a.ms}", f"סיום: {em}"]
+            parts = [f"MS: {a.ms}", f"סיום: {em}"]
+            if a.pe is not None:
+                parts.insert(0, f"שגיאת מיקום: {a.pe}")
             if a.in_target:
                 parts.append("במטרה")
             if a.mf:
@@ -255,6 +283,10 @@ class MainWindow(QMainWindow):
         rows.addLayout(conn)
         title = QLabel(f"<b style='font-size:18pt'>בקר 4164</b>  <span style='color:#5d6b7a'>גרסה {__version__}</span>")
         lay.addWidget(title)
+        self.fw_lbl = QLabel()
+        self.fw_lbl.setStyleSheet("color:#5d6b7a;")
+        self.fw_lbl.setLayoutDirection(Qt.LeftToRight)
+
         lay.addStretch(1)
 
         self.port = QComboBox()
@@ -282,11 +314,16 @@ class MainWindow(QMainWindow):
         for x in (QLabel("חיבור:"), self.port, self.lbl_ip, self.ip, self.lbl_lan, self.lan_port,
                   self.lbl_baud, self.baud, self.conn_btn, self.conn_led):
             conn.addWidget(x)
+        conn.addWidget(self.fw_lbl)
         conn.addStretch(1)
         self._port_kind_changed(self.port.currentText())
 
         self.servo_btn = QPushButton()
         self.servo_btn.clicked.connect(lambda: self.ctrl.set_servo(not self.ctrl.servo))
+        kill = QPushButton("עצור מאקרו (QK)")
+        kill.setToolTip("עוצר את כל תוכניות המאקרו בבקר ואת התנועה בכל הצירים")
+        kill.clicked.connect(lambda: self.ctrl.kill_macros())
+        lay.addWidget(kill)
         home_all = QPushButton("Home לכל הצירים")
         home_all.clicked.connect(lambda: self.ctrl.home_all())
         reset = QPushButton("איפוס תקלה")
@@ -317,10 +354,24 @@ class MainWindow(QMainWindow):
         self.soft = QCheckBox("לימיטים בתוכנה")
         self.soft.setChecked(True)
         self.soft.toggled.connect(lambda on: self.ctrl.set_soft_limits(on))
+        self.home_mode = QComboBox()
+        self.home_mode.addItems(["נסיעה למיקום Home", "מאקרו Home בבקר"])
+        self.home_label = QLineEdit(DEFAULT_HOME_MACRO)
+        self.home_label.setLayoutDirection(Qt.LeftToRight)
+        self.home_label.setFixedWidth(100)
+        self.home_label.setToolTip("שם התווית במאקרו של הבקר. {L} מוחלף באות הציר: #HOME_X, #HOME_Y ...\n"
+                                   "נשלח כ-XQE,#HOME_X. עד 6 תווים אחרי #.")
+        self.home_mode.currentIndexChanged.connect(self._home_mode_changed)
+        self.home_label.editingFinished.connect(self._home_mode_changed)
         for x in (QLabel("צעד:"), self.step, QLabel("מהירות:"), self.speed, self.speed_lbl, self.soft):
             controls.addWidget(x)
         controls.addStretch(1)
         lay.addLayout(controls)
+        home_row = QHBoxLayout()
+        for x in (QLabel("כפתור Home:"), self.home_mode, self.home_label):
+            home_row.addWidget(x)
+        home_row.addStretch(1)
+        lay.addLayout(home_row)
 
         grid = QGridLayout()
         self.panels = [AxisPanel(self, i) for i in range(len(self.ctrl.axes))]
@@ -343,6 +394,10 @@ class MainWindow(QMainWindow):
         save.clicked.connect(self._save_settings)
         load = QPushButton("טען הגדרות")
         load.clicked.connect(self._reload_settings)
+        self.sv_btn = QPushButton("שמור בבקר (SV)")
+        self.sv_btn.setToolTip("שומר את הפרמטרים של הבקר בזיכרון הפלאש שלו, כך שיישארו אחרי כיבוי")
+        self.sv_btn.clicked.connect(self._save_flash)
+        head.addWidget(self.sv_btn)
         head.addWidget(save)
         head.addWidget(load)
         lay.addLayout(head)
@@ -407,6 +462,7 @@ class MainWindow(QMainWindow):
         self.out_btns = []
         for b in range(N_OUTPUTS):
             btn = QPushButton(f"O{b + 1}")
+            btn.setMinimumWidth(40)  # Fusion's default minimum (~80px) makes 8 buttons too wide
             btn.setCheckable(True)
             btn.setToolTip(OUTPUT_NAMES[b] or f"OUT{b}")
             btn.setStyleSheet(f"QPushButton:checked {{ background:{LED_COLORS['out']}; color:black; font-weight:bold; }}")
@@ -492,6 +548,7 @@ class MainWindow(QMainWindow):
             self.ctrl = LinkController(old.axes, transport, log=self.log)
         self.ctrl.speed_pct = old.speed_pct
         self.ctrl.soft_limits = old.soft_limits
+        self.ctrl.home_macro = old.home_macro
         if isinstance(self.ctrl, LinkController):
             self.log("tx", f"מתחבר ל-{self.ctrl.port} ...")
             self.ctrl.start()
@@ -530,10 +587,23 @@ class MainWindow(QMainWindow):
 
     def _load_settings(self) -> bool:
         try:
-            return load_settings(self.settings_path, self.ctrl.axes)
+            ok = load_settings(self.settings_path, self.ctrl.axes)
+            app = load_app_settings(self.settings_path)
         except (OSError, ValueError) as e:
             self.log("err", f"לא הצלחתי לקרוא את {self.settings_path}: {e}")
             return False
+        if "ip" in app:
+            self.ip.setText(app["ip"])
+        if "lan_port" in app:
+            self.lan_port.setEditText(app["lan_port"])
+        if app.get("connection") in (SIM_PORT, LAN_PORT):
+            self.port.setCurrentText(app["connection"])
+        if "home_label" in app:
+            self.home_label.setText(app["home_label"])
+        if "home_mode" in app:
+            self.home_mode.setCurrentIndex(1 if app["home_mode"] == "macro" else 0)
+        self._home_mode_changed()
+        return ok
 
     def _reload_settings(self) -> None:
         if self._load_settings():
@@ -544,10 +614,29 @@ class MainWindow(QMainWindow):
 
     def _save_settings(self) -> None:
         try:
-            save_settings(self.settings_path, self.ctrl.axes)
+            app = {"ip": self.ip.text().strip(), "lan_port": self.lan_port.currentText(),
+                   "connection": self.port.currentText(), "home_label": self.home_label.text().strip(),
+                   "home_mode": "macro" if self.home_mode.currentIndex() == 1 else "position"}
+            save_settings(self.settings_path, self.ctrl.axes, app)
             self.log("rx", f"הגדרות נשמרו ב-{self.settings_path}")
         except OSError as e:
             self.log("err", f"השמירה נכשלה: {e}")
+
+    def _home_mode_changed(self, *_args) -> None:
+        macro = self.home_mode.currentIndex() == 1
+        self.home_label.setEnabled(macro)
+        self.ctrl.home_macro = self.home_label.text().strip() if macro else ""
+
+    def _save_flash(self) -> None:
+        if self.ctrl.simulated or not self.ctrl.connected:
+            self.ctrl.save_flash()
+            return
+        answer = QMessageBox.question(
+            self, "שמירה בבקר",
+            "לשמור את כל הפרמטרים הנוכחיים של הבקר בזיכרון הפלאש שלו (SV)?\n"
+            "הערכים יחליפו את מה שנשמר בבקר עד עכשיו.")
+        if answer == QMessageBox.Yes:
+            self.ctrl.save_flash()
 
     def _tick(self) -> None:
         now = time.monotonic()
@@ -577,6 +666,8 @@ class MainWindow(QMainWindow):
             "background:#fff4e0; border:1px solid #e08a00; border-radius:6px; padding:6px; color:#5a3b00;"
             if real and c.connected else
             "background:#eef1f4; border:1px dashed #c9d1da; border-radius:6px; padding:6px; color:#5d6b7a;")
+        self.fw_lbl.setText(c.firmware if real and c.connected else "")
+        self.sv_btn.setEnabled(real and c.connected)
         self.read_lim.setEnabled(real and c.connected)
         self.write_lim.setEnabled(real and c.connected)
         for b, (on, btn) in enumerate(zip(c.outputs, self.out_btns)):
@@ -584,7 +675,7 @@ class MainWindow(QMainWindow):
                 btn.blockSignals(True)
                 btn.setChecked(on)
                 btn.blockSignals(False)
-        self.servo_btn.setText("סרבו: פעיל" if c.servo else "סרבו: כבוי")
+        self.servo_btn.setText("כבה סרבו בכל הצירים" if c.servo else "הדלק סרבו בכל הצירים")
         self.speed_lbl.setText(f"{c.speed_pct}%")
 
         word = c.status_word()

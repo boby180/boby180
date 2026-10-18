@@ -44,6 +44,7 @@ END_MOTION_REASONS = {
 MOTOR_FAULTS = {0: "", 1: "תקלת דרייבר", 2: "כניסת ABORT", 3: "שגיאת מיקום גדולה (PE>ER)",
                 4: "מנוע תקוע", 0x40: "שגיאת אנקודר", 0x80: "אנקודר מנותק"}
 SR_IN_TARGET = 0x20
+DEFAULT_HOME_MACRO = "#HOME_{L}"   # SC-AT Macro Language manual example: XQE,#HOME_X
 
 LogFn = Callable[[str, str], None]  # (kind: "tx" | "rx" | "err", text)
 
@@ -79,6 +80,9 @@ class Axis:
     rls: bool | None = None       # reverse limit switch (IP bit 16 + 2i), None in simulation
     fls: bool | None = None       # forward limit switch (IP bit 17 + 2i)
     drv_fault: bool = False       # driver fault input (IP bit 24 + i)
+    pe: int | None = None         # PE, position error [counts]
+    macro_running: bool | None = None   # QF[1] bit i
+    macro_rte: bool | None = None       # QF[3] bit i, macro stopped on a run-time error
 
     def bits(self, deg: float | None = None) -> int:
         return round((self.pos if deg is None else deg) * self.cfg.bits_per_deg)
@@ -134,6 +138,8 @@ class BaseController:
         self.soft_limits = True
         self.speed_pct = 40
         self.outputs = [False] * N_OUTPUTS
+        self.firmware = ""
+        self.home_macro = ""   # e.g. "#HOME_{L}"; empty = Home moves to the Home position
 
     def set_soft_limits(self, on: bool) -> None:
         self.soft_limits = on
@@ -142,19 +148,21 @@ class BaseController:
         else:
             self.log("err", "SOFT LIMITS OFF: הציר יעצור רק בלימיט החומרה")
 
-    def why_cant_move(self) -> str | None:
+    def why_cant_move(self, i: int | None = None) -> str | None:
+        """Why axis i (or every axis when i is None) may not move now; None if it may."""
         if not self.connected:
             return "אין חיבור לבקר."
         if self.estop:
             return 'עצירת חירום פעילה. לחץ "איפוס תקלה".'
         if self.alarm:
             return 'יש תקלה פעילה. לחץ "איפוס תקלה".'
-        if not self.servo:
-            return "הסרבו כבוי. הדלק סרבו לפני תנועה."
+        off = [a.name for a in (self.axes if i is None else [self.axes[i]]) if not a.motor_on]
+        if off:
+            return f"המנוע כבוי ב-{', '.join(off)}. הדלק סרבו לפני תנועה."
         return None
 
-    def _check_move(self) -> bool:
-        reason = self.why_cant_move()
+    def _check_move(self, i: int | None = None) -> bool:
+        reason = self.why_cant_move(i)
         if reason:
             self.log("err", reason)
         return reason is None
@@ -178,13 +186,31 @@ class BaseController:
         return self.move_to(i, base + direction * step_deg, "JOG")
 
     def home(self, i: int) -> bool:
+        if self.home_macro:
+            return self.run_macro(i, self.home_macro.replace("{L}", self.axes[i].letter))
         return self.move_to(i, self.axes[i].cfg.home, "HOME")
 
     def home_all(self) -> bool:
-        if not self._check_move():
+        if not self.home_macro and not self._check_move():
             return False
         self.log("tx", "HOME ALL")
-        return all([self.move_to(i, a.cfg.home, "HOME") for i, a in enumerate(self.axes)])
+        return all([self.home(i) for i in range(len(self.axes))])
+
+    def set_axis_servo(self, i: int, on: bool) -> bool:
+        raise NotImplementedError
+
+    def run_macro(self, i: int, label: str) -> bool:
+        self.log("err", f"הפעלת מאקרו ({label}) אפשרית רק בחיבור לבקר. בסימולציה Home נוסע למיקום ה-Home.")
+        return self.move_to(i, self.axes[i].cfg.home, "HOME")
+
+    def kill_macros(self) -> None:
+        self.log("tx", "QK (סימולציה): עצירת כל הצירים")
+        for i in range(len(self.axes)):
+            self.jog_stop(i)
+            self.axes[i].target = None
+
+    def save_flash(self) -> None:
+        self.log("err", "שמירה לפלאש (SV) אפשרית רק בחיבור לבקר.")
 
     def move_to(self, i: int, deg: float, verb: str = "MOVE") -> bool:
         raise NotImplementedError
@@ -240,20 +266,25 @@ class SimController(BaseController):
         self.log("tx", "DISCONNECT")
 
     def set_servo(self, on: bool) -> bool:
+        return all([self.set_axis_servo(i, on) for i in range(len(self.axes))])
+
+    def set_axis_servo(self, i: int, on: bool) -> bool:
         if on and (self.estop or self.alarm):
             self.log("err", "אי אפשר להדליק סרבו כשיש עצירת חירום או תקלה.")
             return False
-        self.servo = on
-        for a in self.axes:
-            a.motor_on = on
+        a = self.axes[i]
+        a.motor_on = on
         if not on:
-            self._stop_all()
-        self.log("tx", f"SERVO {'ON' if on else 'OFF'}")
+            a.jog, a.target = 0, None
+        self.servo = all(x.motor_on for x in self.axes)
+        self.log("tx", f"{a.letter}MO={int(on)}")
         return True
 
     def emergency_stop(self) -> None:
         self.estop = True
         self.servo = False
+        for a in self.axes:
+            a.motor_on = False
         self._stop_all()
         self.log("err", "E-STOP: כל הצירים נעצרו, הסרבו כובה")
 
@@ -269,7 +300,7 @@ class SimController(BaseController):
 
     # ---- motion commands ----
     def move_to(self, i: int, deg: float, verb: str = "MOVE") -> bool:
-        if not self._check_move():
+        if not self._check_move(i):
             return False
         a = self.axes[i]
         deg = self._clamp_target(a, deg)
@@ -278,7 +309,7 @@ class SimController(BaseController):
         return True
 
     def jog_start(self, i: int, direction: int) -> bool:
-        if not self._check_move():
+        if not self._check_move(i):
             return False
         a = self.axes[i]
         a.jog, a.target = direction, None
@@ -338,6 +369,8 @@ class SimController(BaseController):
                 hit_min = a.at_hw_min
                 a.pos = a.cfg.min - HW_MARGIN if hit_min else a.cfg.max + HW_MARGIN
                 a.hw_hit, self.alarm, self.servo = True, True, False
+                for x in self.axes:
+                    x.motor_on = False
                 self._stop_all()
                 self.log("err", f"{a.name}: מתג גבול {'LIM−' if hit_min else 'LIM+'} הופעל. תקלה, הסרבו כובה")
             a.vel = (a.pos - old) / dt
@@ -358,8 +391,8 @@ def app_dir() -> Path:
     return Path(__file__).resolve().parent.parent
 
 
-def save_settings(path: Path, axes: list[Axis]) -> None:
-    data = {"axes": {a.name: asdict(a.cfg) for a in axes}}
+def save_settings(path: Path, axes: list[Axis], app: dict | None = None) -> None:
+    data = {"axes": {a.name: asdict(a.cfg) for a in axes}, "app": app or {}}
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
@@ -378,3 +411,11 @@ def load_settings(path: Path, axes: list[Axis]) -> bool:
         if a.cfg.bits_per_deg <= 0:
             a.cfg.bits_per_deg = AxisSettings.bits_per_deg
     return True
+
+
+def load_app_settings(path: Path) -> dict[str, str]:
+    """Connection and Home settings saved with the axes (string values only)."""
+    if not path.exists():
+        return {}
+    app = json.loads(path.read_text(encoding="utf-8")).get("app", {})
+    return {k: v for k, v in app.items() if isinstance(v, str)} if isinstance(app, dict) else {}

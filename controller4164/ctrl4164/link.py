@@ -9,6 +9,8 @@ Commands used (all from the SC-AT manuals that came with the controller):
     _SR  status register          _EM  end of motion reason          _MF  motor fault
     XIP  inputs: bits 0-15 Din1-16, 16-23 RLS/FLS of X,Y,Z,W, 24-27 driver faults, 28 ABORT
     XOP  outputs (8 bits); XOS,n / XOC,n set / clear output n (1-8)
+    _PE  position error   XQF[1] / XQF[3] macros running / stopped on error   XVR version
+    _QE,#LABEL run a macro (Home: #HOME_X ...), XQK kill macros and stop all, XSV save to flash
     _MM=0 point-to-point, _MM=1 jog; _SM=0; _SP speed [counts/s]; _AP target [counts]
     _BG begin, _ST stop, _AB abort, _LL / _HL position limits [counts]
 """
@@ -41,7 +43,8 @@ class LinkController(BaseController):
         self._thread: threading.Thread | None = None
         self._last_poll = 0.0
         for a in self.axes:
-            a.ms = a.sr = a.em = a.mf = a.rls = a.fls = None
+            a.ms = a.sr = a.em = a.mf = a.rls = a.fls = a.pe = None
+            a.macro_running = a.macro_rte = None
             a.motor_on = False
 
     # ---- thread ----
@@ -69,6 +72,10 @@ class LinkController(BaseController):
         self.connected = True
         self.log("rx", f"CONNECTED {self.port}")
         try:
+            vr = self.transport.transact(["XVR"])[0]
+            if vr.ok and vr.text:
+                self.firmware = vr.text
+                self.log("rx", f"גרסת בקר: {vr.text}")
             self._poll()
             while not self._stop.is_set():
                 try:
@@ -113,10 +120,25 @@ class LinkController(BaseController):
         letters = [a.letter for a in self.axes]
         main = ([f"{L}PS" for L in letters] + [f"{L}MS" for L in letters]
                 + [f"{L}MO" for L in letters] + ["XIP", "XOP"])
-        extra = [f"{L}SR" for L in letters] + [f"{L}EM" for L in letters] + [f"{L}MF" for L in letters]
+        extra = ([f"{L}SR" for L in letters] + [f"{L}EM" for L in letters]
+                 + [f"{L}MF" for L in letters])
+        slow = [f"{L}PE" for L in letters] + ["XQF[1]", "XQF[3]"]
         r1 = self.transport.transact(main)
         r2 = self.transport.transact(extra)
+        r3 = self.transport.transact(slow)
         self._apply_poll(r1, r2, now)
+        self._apply_macros(r3)
+
+    def _apply_macros(self, r3: list[Reply]) -> None:
+        n = len(self.axes)
+        running, rte = r3[n].value, r3[n + 1].value
+        for i, a in enumerate(self.axes):
+            a.pe = r3[i].value
+            new_rte = None if rte is None else bool(rte >> i & 1)
+            if new_rte and not a.macro_rte:
+                self.log("err", f"מאקרו {a.letter} נעצר בשגיאת ריצה (בדוק {a.letter}QC)")
+            a.macro_running = None if running is None else bool(running >> i & 1)
+            a.macro_rte = new_rte
 
     def _apply_poll(self, r1: list[Reply], r2: list[Reply], now: float) -> None:
         n = len(self.axes)
@@ -171,16 +193,12 @@ class LinkController(BaseController):
         self.alarm = abort or any(a.drv_fault for a in self.axes)
 
     # ---- commands ----
-    def why_cant_move(self) -> str | None:
+    def why_cant_move(self, i: int | None = None) -> str | None:
         if self.connected and self.alarm:
             faults = [a.name for a in self.axes if a.drv_fault]
             return (("כניסת ABORT פעילה." if self.abort_in else "") +
                     (f" תקלת דרייבר ב-{', '.join(faults)}." if faults else "")).strip()
-        reason = super().why_cant_move()
-        if reason and "סרבו" in reason:
-            off = [a.name for a in self.axes if not a.motor_on]
-            return f"המנוע כבוי ב-{', '.join(off)}. הדלק סרבו לפני תנועה."
-        return reason
+        return super().why_cant_move(i)
 
     def set_servo(self, on: bool) -> bool:
         if not self.connected:
@@ -191,6 +209,37 @@ class LinkController(BaseController):
             return False
         self._send([f"{a.letter}MO={int(on)}" for a in self.axes])
         return True
+
+    def set_axis_servo(self, i: int, on: bool) -> bool:
+        if not self.connected:
+            self.log("err", "אין חיבור לבקר.")
+            return False
+        if on and self.estop:
+            self.log("err", 'עצירת חירום פעילה. לחץ "איפוס תקלה" לפני הדלקת הסרבו.')
+            return False
+        self._send([f"{self.axes[i].letter}MO={int(on)}"])
+        return True
+
+    def run_macro(self, i: int, label: str) -> bool:
+        if not self.connected:
+            self.log("err", "אין חיבור לבקר.")
+            return False
+        if self.estop:
+            self.log("err", 'עצירת חירום פעילה. לחץ "איפוס תקלה".')
+            return False
+        if not label.startswith("#") or len(label) > 7:
+            self.log("err", f"שם מאקרו לא תקין: {label}. צריך להתחיל ב-# ועד 6 תווים (מגבלת הבקר).")
+            return False
+        self._send([f"{self.axes[i].letter}QE,{label}"])
+        return True
+
+    def kill_macros(self) -> None:
+        if self.connected:
+            self._send_now(["XQK"])
+
+    def save_flash(self) -> None:
+        if self.connected:
+            self._send(["XSV"])
 
     def emergency_stop(self) -> None:
         self.estop = True
@@ -207,7 +256,7 @@ class LinkController(BaseController):
         self.log("tx", "RESET (מקומי)")
 
     def move_to(self, i: int, deg: float, verb: str = "MOVE") -> bool:
-        if not self._check_move():
+        if not self._check_move(i):
             return False
         a = self.axes[i]
         if a.moving:
@@ -220,7 +269,7 @@ class LinkController(BaseController):
         return True
 
     def jog_start(self, i: int, direction: int) -> bool:
-        if not self._check_move():
+        if not self._check_move(i):
             return False
         a = self.axes[i]
         if a.moving:
