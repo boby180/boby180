@@ -1,0 +1,4 @@
+build/
+dist/
+*.spec
+settings_4164.json
