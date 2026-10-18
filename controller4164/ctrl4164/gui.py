@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import queue
 import sys
 import time
 
@@ -13,13 +14,20 @@ from PySide6.QtWidgets import (
     QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
+from .link import LinkController
 from .model import (
-    HW_MARGIN, INPUT_NAMES, N_BITS, OUTPUT_NAMES, SETTINGS_FILE, STATUS_BITS, Axis, SimController,
-    app_dir, load_settings, save_settings,
+    END_MOTION_REASONS, HW_MARGIN, INPUT_NAMES, N_BITS, OUTPUT_NAMES, SETTINGS_FILE, STATUS_BITS, Axis,
+    SimController, app_dir, load_settings, save_settings,
 )
+from .protocol import LAN_PORTS, SERIAL_BAUDS, LanTransport, SerialTransport
 from .version import __version__
 
 SIM_PORT = "סימולציה"
+LAN_PORT = "Ethernet (LAN)"
+DEFAULT_IP = "192.168.1.254"
+SIM_NOTE = "מצב סימולציה: הפקודות לא נשלחות לבקר. לחיבור אמיתי בחר Ethernet או פורט COM ולחץ התחבר."
+LINK_NOTE = ("מחובר לבקר SC-NT-4M. הפקודות זזות באמת. עצירת החירום בתוכנה שולחת AB ו-MO=0, "
+             "והיא לא מחליפה את לחצן החירום של המכונה.")
 TICK_MS = 20
 LRM = "\u200e"
 MONO = QFont("Consolas")
@@ -95,7 +103,7 @@ class AxisPanel(QGroupBox):
     def __init__(self, win: "MainWindow", index: int):
         self.win, self.i = win, index
         self.axis = win.ctrl.axes[index]
-        super().__init__(f"{self.axis.name}  ·  ציר {index + 1}")
+        super().__init__(f"{self.axis.name}  ·  ציר {self.axis.letter}")
         lay = QVBoxLayout(self)
 
         self.readout = QLabel()
@@ -105,8 +113,8 @@ class AxisPanel(QGroupBox):
         self.readout.setStyleSheet("background:#eef1f4; color:#111820; border:1px solid #c9d1da; border-radius:6px; padding:4px 10px;")
         lay.addWidget(self.readout)
 
-        self.sub1, self.sub2 = QLabel(), QLabel()
-        for s in (self.sub1, self.sub2):
+        self.sub1, self.sub2, self.sub3 = QLabel(), QLabel(), QLabel()
+        for s in (self.sub1, self.sub2, self.sub3):
             s.setStyleSheet("color:#5d6b7a;")
             lay.addWidget(s)
 
@@ -170,6 +178,12 @@ class AxisPanel(QGroupBox):
         self.sub1.setText(f"יעד: {target}    מהירות: {a.vel:+.1f} °/ש'")
         self.sub2.setText(f"ביטים: {a.bits():,}    קבוע: {a.cfg.bits_per_deg:g} ביט/°")
         self.range_lbl.setText(f"{LRM}{a.cfg.min:g}°  …  {a.cfg.max:g}°")
+        if a.ms is None:
+            self.sub3.setText("מנוע: " + ("פעיל" if a.motor_on else "כבוי"))
+        else:
+            em = "—" if a.em is None else f"{a.em} {END_MOTION_REASONS.get(a.em, '')}".strip()
+            sr = "—" if a.sr is None else f"0x{a.sr & 0xFFFFFFFF:08X}"
+            self.sub3.setText(f"מנוע: {'פעיל' if a.motor_on else 'כבוי'}    MS: {a.ms}    EM: {em}    SR: {sr}")
         self.f_min.set("bad" if a.at_hw_min else "")
         self.f_max.set("bad" if a.at_hw_max else "")
         self.f_soft.set("warn" if a.at_soft_limit else "")
@@ -187,6 +201,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle(f"בקר 4164  ·  גרסה {__version__}")
         self.setLayoutDirection(Qt.RightToLeft)
+        self._log_q: queue.Queue = queue.Queue()
         self.ctrl = SimController(log=self.log)
         self.settings_path = app_dir() / SETTINGS_FILE
 
@@ -198,10 +213,9 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(scroll)
         outer = QVBoxLayout(root)
         outer.addWidget(self._top_bar())
-        note = QLabel("מצב סימולציה: הפקודות לא נשלחות לבקר. החיבור האמיתי ייכנס אחרי שיתקבל הפרוטוקול של הבקר.")
-        note.setStyleSheet("background:#eef1f4; border:1px dashed #c9d1da; border-radius:6px; padding:6px; color:#5d6b7a;")
-        note.setWordWrap(True)
-        outer.addWidget(note)
+        self.note = QLabel(SIM_NOTE)
+        self.note.setWordWrap(True)
+        outer.addWidget(self.note)
 
         body = QHBoxLayout()
         outer.addLayout(body, 1)
@@ -222,37 +236,53 @@ class MainWindow(QMainWindow):
     # ---- building ----
     def _top_bar(self) -> QWidget:
         w = QFrame()
-        lay = QHBoxLayout(w)
+        rows = QVBoxLayout(w)
+        rows.setContentsMargins(0, 0, 0, 0)
+        lay, conn = QHBoxLayout(), QHBoxLayout()
+        rows.addLayout(lay)
+        rows.addLayout(conn)
         title = QLabel(f"<b style='font-size:18pt'>בקר 4164</b>  <span style='color:#5d6b7a'>גרסה {__version__}</span>")
         lay.addWidget(title)
         lay.addStretch(1)
 
         self.port = QComboBox()
-        self.port.addItem(SIM_PORT)
+        self.port.addItems([SIM_PORT, LAN_PORT])
         try:
             from serial.tools import list_ports
             self.port.addItems([p.device for p in list_ports.comports()])
         except Exception:
             pass
+        self.port.setCurrentText(LAN_PORT)
+        self.ip = QLineEdit(DEFAULT_IP)
+        self.ip.setLayoutDirection(Qt.LeftToRight)
+        self.ip.setFixedWidth(120)
+        self.lan_port = QComboBox()
+        self.lan_port.addItems([str(p) for p in LAN_PORTS])
+        self.lan_port.setEditable(True)
         self.baud = QComboBox()
-        self.baud.addItems(["9600", "19200", "38400", "57600", "115200"])
+        self.baud.addItems([str(b) for b in SERIAL_BAUDS])
         self.baud.setCurrentText("115200")
+        self.lbl_ip, self.lbl_lan, self.lbl_baud = QLabel("IP:"), QLabel("פורט TCP:"), QLabel("מהירות:")
+        self.port.currentTextChanged.connect(self._port_kind_changed)
         self.conn_btn = QPushButton("התחבר")
         self.conn_btn.clicked.connect(self._toggle_conn)
         self.conn_led = Led()
-        for x in (QLabel("פורט:"), self.port, QLabel("מהירות:"), self.baud, self.conn_btn, self.conn_led):
-            lay.addWidget(x)
+        for x in (QLabel("חיבור:"), self.port, self.lbl_ip, self.ip, self.lbl_lan, self.lan_port,
+                  self.lbl_baud, self.baud, self.conn_btn, self.conn_led):
+            conn.addWidget(x)
+        conn.addStretch(1)
+        self._port_kind_changed(self.port.currentText())
 
         self.servo_btn = QPushButton()
         self.servo_btn.clicked.connect(lambda: self.ctrl.set_servo(not self.ctrl.servo))
         home_all = QPushButton("Home לכל הצירים")
-        home_all.clicked.connect(self.ctrl.home_all)
+        home_all.clicked.connect(lambda: self.ctrl.home_all())
         reset = QPushButton("איפוס תקלה")
-        reset.clicked.connect(self.ctrl.reset)
+        reset.clicked.connect(lambda: self.ctrl.reset())
         estop = QPushButton("עצירת חירום")
         estop.setStyleSheet("QPushButton { background:#d62f2f; color:white; font-weight:bold; font-size:13pt;"
                             " border:3px solid #e08a00; border-radius:18px; padding:6px 18px; }")
-        estop.clicked.connect(self.ctrl.emergency_stop)
+        estop.clicked.connect(lambda: self.ctrl.emergency_stop())
         for x in (self.servo_btn, home_all, reset, estop):
             lay.addWidget(x)
         return w
@@ -274,7 +304,7 @@ class MainWindow(QMainWindow):
         self.speed.valueChanged.connect(self._speed_changed)
         self.soft = QCheckBox("לימיטים בתוכנה")
         self.soft.setChecked(True)
-        self.soft.toggled.connect(self.ctrl.set_soft_limits)
+        self.soft.toggled.connect(lambda on: self.ctrl.set_soft_limits(on))
         for x in (QLabel("צעד:"), self.step, QLabel("מהירות:"), self.speed, self.speed_lbl, self.soft):
             controls.addWidget(x)
         controls.addStretch(1)
@@ -289,6 +319,14 @@ class MainWindow(QMainWindow):
         head = QHBoxLayout()
         head.addWidget(QLabel("<b>לימיטים וקבועים</b>"))
         head.addStretch(1)
+        self.read_lim = QPushButton("קרא לימיטים מהבקר")
+        self.read_lim.setToolTip("LL / HL של כל ציר, מומרים למעלות לפי הקבוע")
+        self.read_lim.clicked.connect(lambda: self.ctrl.read_limits())
+        self.write_lim = QPushButton("כתוב לימיטים לבקר")
+        self.write_lim.setToolTip("שולח LL / HL לכל ציר (בלי SV, כלומר לא נשמר בפלאש של הבקר)")
+        self.write_lim.clicked.connect(lambda: self.ctrl.write_limits())
+        head.addWidget(self.read_lim)
+        head.addWidget(self.write_lim)
         save = QPushButton("שמור הגדרות")
         save.clicked.connect(self._save_settings)
         load = QPushButton("טען הגדרות")
@@ -376,7 +414,7 @@ class MainWindow(QMainWindow):
         cl.addWidget(self.console)
         cmd = QHBoxLayout()
         self.cmd = QLineEdit()
-        self.cmd.setPlaceholderText("פקודה ידנית, למשל: J1 MOVE 30")
+        self.cmd.setPlaceholderText("פקודה לבקר, למשל: XPS  או  XSP;YSP  (בסימולציה: J1 MOVE 30)")
         self.cmd.setLayoutDirection(Qt.LeftToRight)
         self.cmd.returnPressed.connect(self._send_cmd)
         send = QPushButton("שלח")
@@ -389,10 +427,19 @@ class MainWindow(QMainWindow):
 
     # ---- actions ----
     def log(self, kind: str, text: str) -> None:
-        if not hasattr(self, "console"):
-            return
+        """Safe from any thread: lines are queued and written by the GUI timer."""
+        self._log_q.put((time.strftime("%H:%M:%S"), kind, text))
+
+    def _flush_log(self) -> None:
+        while True:
+            try:
+                stamp, kind, text = self._log_q.get_nowait()
+            except queue.Empty:
+                return
+            self._write_log(stamp, kind, text)
+
+    def _write_log(self, stamp: str, kind: str, text: str) -> None:
         tag = {"tx": "TX", "rx": "RX", "err": "ERR"}[kind]
-        stamp = time.strftime("%H:%M:%S")
         self.console.appendHtml(
             f"<span style='color:#7a8794'>{stamp}</span> <span style='color:{LOG_COLORS[kind]}'>{tag}</span> "
             + text.replace("&", "&amp;").replace("<", "&lt;"))
@@ -404,14 +451,40 @@ class MainWindow(QMainWindow):
         self.ctrl.speed_pct = value
         self.speed_lbl.setText(f"{value}%")
 
+    def _port_kind_changed(self, kind: str) -> None:
+        lan, serial = kind == LAN_PORT, kind not in (LAN_PORT, SIM_PORT)
+        for w in (self.lbl_ip, self.ip, self.lbl_lan, self.lan_port):
+            w.setVisible(lan)
+        for w in (self.lbl_baud, self.baud):
+            w.setVisible(serial)
+
+    def _connecting(self) -> bool:
+        c = self.ctrl
+        return isinstance(c, LinkController) and not c.connected and c._thread is not None \
+            and c._thread.is_alive()
+
     def _toggle_conn(self) -> None:
-        if self.ctrl.connected:
+        if self.ctrl.connected or self._connecting():
             self.ctrl.disconnect()
             return
-        port = self.port.currentText()
-        if port != SIM_PORT:
-            self.log("err", f"הפרוטוקול של הבקר עוד לא ידוע. {port} לא נפתח, ממשיכים בסימולציה.")
-        self.ctrl.connect(port, int(self.baud.currentText()))
+        old = self.ctrl
+        old.close()
+        kind = self.port.currentText()
+        if kind == SIM_PORT:
+            self.ctrl = SimController(log=self.log, axes=old.axes)
+        else:
+            if kind == LAN_PORT:
+                transport = LanTransport(self.ip.text().strip(), int(self.lan_port.currentText()))
+            else:
+                transport = SerialTransport(kind, int(self.baud.currentText()))
+            self.ctrl = LinkController(old.axes, transport, log=self.log)
+        self.ctrl.speed_pct = old.speed_pct
+        self.ctrl.soft_limits = old.soft_limits
+        if isinstance(self.ctrl, LinkController):
+            self.log("tx", f"מתחבר ל-{self.ctrl.port} ...")
+            self.ctrl.start()
+        else:
+            self.ctrl.connect(SIM_PORT, 0)
 
     def _send_cmd(self) -> None:
         text = self.cmd.text().strip()
@@ -468,14 +541,37 @@ class MainWindow(QMainWindow):
         now = time.monotonic()
         self.ctrl.tick(now - self._last)
         self._last = now
+        if getattr(self.ctrl, "limits_read", False):
+            self.ctrl.limits_read = False
+            self._fill_limits_table()
         self.refresh()
+        self._flush_log()
+
+    def closeEvent(self, event) -> None:
+        self.ctrl.close()
+        super().closeEvent(event)
 
     def refresh(self) -> None:
         c = self.ctrl
         for p in self.panels:
             p.refresh()
-        self.conn_btn.setText("התנתק" if c.connected else "התחבר")
-        self.conn_led.set("on" if c.connected else "off")
+        connecting = self._connecting()
+        self.conn_btn.setText("התנתק" if c.connected else "מתחבר..." if connecting else "התחבר")
+        self.conn_led.set("on" if c.connected else "warn" if connecting else "off")
+        real = not c.simulated
+        self.note.setText(LINK_NOTE if real and c.connected else SIM_NOTE if c.simulated else
+                          "לא מחובר לבקר.")
+        self.note.setStyleSheet(
+            "background:#fff4e0; border:1px solid #e08a00; border-radius:6px; padding:6px; color:#5a3b00;"
+            if real and c.connected else
+            "background:#eef1f4; border:1px dashed #c9d1da; border-radius:6px; padding:6px; color:#5d6b7a;")
+        self.read_lim.setEnabled(real and c.connected)
+        self.write_lim.setEnabled(real and c.connected)
+        for b, (on, btn) in enumerate(zip(c.outputs, self.out_btns)):
+            if btn.isChecked() != on:
+                btn.blockSignals(True)
+                btn.setChecked(on)
+                btn.blockSignals(False)
         self.servo_btn.setText("סרבו: פעיל" if c.servo else "סרבו: כבוי")
         self.speed_lbl.setText(f"{c.speed_pct}%")
 
