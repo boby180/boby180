@@ -6,10 +6,10 @@ import sys
 import time
 
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QColor, QFont, QPainter
+from PySide6.QtGui import QColor, QFont, QPainter, QPalette
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDoubleSpinBox, QFrame, QGridLayout, QGroupBox, QHBoxLayout,
-    QHeaderView, QLabel, QLineEdit, QMainWindow, QPlainTextEdit, QPushButton, QSizePolicy, QSlider,
+    QHeaderView, QLabel, QLineEdit, QMainWindow, QPlainTextEdit, QPushButton, QScrollArea, QSizePolicy, QSlider,
     QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
@@ -102,7 +102,7 @@ class AxisPanel(QGroupBox):
         self.readout.setFont(mono(24, bold=True))
         self.readout.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         self.readout.setLayoutDirection(Qt.LeftToRight)
-        self.readout.setStyleSheet("background:#eef1f4; border:1px solid #c9d1da; border-radius:6px; padding:4px 10px;")
+        self.readout.setStyleSheet("background:#eef1f4; color:#111820; border:1px solid #c9d1da; border-radius:6px; padding:4px 10px;")
         lay.addWidget(self.readout)
 
         self.sub1, self.sub2 = QLabel(), QLabel()
@@ -169,7 +169,7 @@ class AxisPanel(QGroupBox):
         target = f"{a.target:+.3f}°" if a.target is not None else "—"
         self.sub1.setText(f"יעד: {target}    מהירות: {a.vel:+.1f} °/ש'")
         self.sub2.setText(f"ביטים: {a.bits():,}    קבוע: {a.cfg.bits_per_deg:g} ביט/°")
-        self.range_lbl.setText(f"{a.cfg.min:g}°  …  {a.cfg.max:g}°")
+        self.range_lbl.setText(f"{LRM}{a.cfg.min:g}°  …  {a.cfg.max:g}°")
         self.f_min.set("bad" if a.at_hw_min else "")
         self.f_max.set("bad" if a.at_hw_max else "")
         self.f_soft.set("warn" if a.at_soft_limit else "")
@@ -191,7 +191,11 @@ class MainWindow(QMainWindow):
         self.settings_path = app_dir() / SETTINGS_FILE
 
         root = QWidget()
-        self.setCentralWidget(root)
+        scroll = QScrollArea()  # small screens: scroll instead of cutting off the limits table
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setWidget(root)
+        self.setCentralWidget(scroll)
         outer = QVBoxLayout(root)
         outer.addWidget(self._top_bar())
         note = QLabel("מצב סימולציה: הפקודות לא נשלחות לבקר. החיבור האמיתי ייכנס אחרי שיתקבל הפרוטוקול של הבקר.")
@@ -485,9 +489,30 @@ class MainWindow(QMainWindow):
             led.set("on" if on else "off")
 
 
+def light_palette() -> QPalette:
+    """Fixed light colours. Without this, Windows dark mode turns the text white while
+    the readouts and chips keep their light backgrounds, and the angles disappear."""
+    pal = QPalette()
+    colors = {
+        QPalette.Window: "#e9edf1", QPalette.WindowText: "#1c2530", QPalette.Base: "#ffffff",
+        QPalette.AlternateBase: "#f2f4f7", QPalette.Text: "#1c2530", QPalette.Button: "#f7f9fb",
+        QPalette.ButtonText: "#1c2530", QPalette.Highlight: "#2f6fb3", QPalette.HighlightedText: "#ffffff",
+        QPalette.ToolTipBase: "#ffffff", QPalette.ToolTipText: "#1c2530", QPalette.PlaceholderText: "#7a8794",
+        QPalette.BrightText: "#ffffff", QPalette.Link: "#2f6fb3",
+    }
+    for role, color in colors.items():
+        pal.setColor(role, QColor(color))
+    for role in (QPalette.WindowText, QPalette.Text, QPalette.ButtonText):
+        pal.setColor(QPalette.Disabled, role, QColor("#9aa5b1"))
+    return pal
+
+
 def main() -> None:
     app = QApplication(sys.argv)
+    if hasattr(app.styleHints(), "setColorScheme"):  # Qt 6.8+
+        app.styleHints().setColorScheme(Qt.ColorScheme.Light)
     app.setStyle("Fusion")
+    app.setPalette(light_palette())
     app.setLayoutDirection(Qt.RightToLeft)
     win = MainWindow()
     win.resize(1400, 900)
