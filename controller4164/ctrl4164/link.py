@@ -6,7 +6,9 @@ callback, which the GUI makes thread-safe.
 
 Commands used (all from the SC-AT manuals that came with the controller):
     _PS  position [counts]        _MS  motion status (0 = stopped)   _MO  motor on (1/0)
-    _SR  status register          _EM  end of motion reason          XIP / XOP  I/O ports
+    _SR  status register          _EM  end of motion reason          _MF  motor fault
+    XIP  inputs: bits 0-15 Din1-16, 16-23 RLS/FLS of X,Y,Z,W, 24-27 driver faults, 28 ABORT
+    XOP  outputs (8 bits); XOS,n / XOC,n set / clear output n (1-8)
     _MM=0 point-to-point, _MM=1 jog; _SM=0; _SP speed [counts/s]; _AP target [counts]
     _BG begin, _ST stop, _AB abort, _LL / _HL position limits [counts]
 """
@@ -18,7 +20,7 @@ import threading
 import time
 from typing import Callable
 
-from .model import N_BITS, Axis, BaseController, LogFn
+from .model import MOTOR_FAULTS, N_BITS, N_OUTPUTS, Axis, BaseController, LogFn
 from .protocol import ProtocolError, Reply, check_clauses
 
 POLL_INTERVAL = 0.1
@@ -32,13 +34,14 @@ class LinkController(BaseController):
         self.transport = transport
         self.port = transport.describe()
         self.in_bits = [False] * N_BITS
+        self.abort_in = False
         self.limits_read = False  # set by read_limits(); the GUI refreshes its table
         self._q: queue.Queue = queue.Queue()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._last_poll = 0.0
         for a in self.axes:
-            a.ms = a.sr = a.em = None
+            a.ms = a.sr = a.em = a.mf = a.rls = a.fls = None
             a.motor_on = False
 
     # ---- thread ----
@@ -110,7 +113,7 @@ class LinkController(BaseController):
         letters = [a.letter for a in self.axes]
         main = ([f"{L}PS" for L in letters] + [f"{L}MS" for L in letters]
                 + [f"{L}MO" for L in letters] + ["XIP", "XOP"])
-        extra = [f"{L}SR" for L in letters] + [f"{L}EM" for L in letters]
+        extra = [f"{L}SR" for L in letters] + [f"{L}EM" for L in letters] + [f"{L}MF" for L in letters]
         r1 = self.transport.transact(main)
         r2 = self.transport.transact(extra)
         self._apply_poll(r1, r2, now)
@@ -140,16 +143,39 @@ class LinkController(BaseController):
                 a.target = None  # short move finished between two polls
             a.sr = r2[i].value
             a.em = r2[n + i].value
+            mf = r2[2 * n + i].value
+            if mf and mf != a.mf:
+                self.log("err", f"{a.name}: תקלת מנוע MF={mf} {MOTOR_FAULTS.get(mf, '')}".rstrip())
+            a.mf = mf
             a.soft_hit = a.em in (4, 5)
         self.servo = all(a.motor_on for a in self.axes)
         ip, op = r1[3 * n].value, r1[3 * n + 1].value
         if ip is not None:
-            self.in_bits = [bool(ip >> b & 1) for b in range(N_BITS)]
+            self._apply_inputs(ip)
         if op is not None:
-            self.outputs = [bool(op >> b & 1) for b in range(N_BITS)]
+            self.outputs = [bool(op >> b & 1) for b in range(N_OUTPUTS)]
+
+    def _apply_inputs(self, ip: int) -> None:
+        self.in_bits = [bool(ip >> b & 1) for b in range(N_BITS)]
+        for i, a in enumerate(self.axes):
+            rls, fls = bool(ip >> (16 + 2 * i) & 1), bool(ip >> (17 + 2 * i) & 1)
+            if (rls and not a.rls) or (fls and not a.fls):
+                self.log("err", f"{a.name}: מתג גבול {'RLS (LIM−)' if rls else 'FLS (LIM+)'} פעיל")
+            a.rls, a.fls = rls, fls
+            a.hw_hit = rls or fls
+            a.drv_fault = bool(ip >> (24 + i) & 1)
+        abort = bool(ip >> 28 & 1)
+        if abort and not self.abort_in:
+            self.log("err", "כניסת ABORT פעילה: הבקר מכבה את כל הצירים")
+        self.abort_in = abort
+        self.alarm = abort or any(a.drv_fault for a in self.axes)
 
     # ---- commands ----
     def why_cant_move(self) -> str | None:
+        if self.connected and self.alarm:
+            faults = [a.name for a in self.axes if a.drv_fault]
+            return (("כניסת ABORT פעילה." if self.abort_in else "") +
+                    (f" תקלת דרייבר ב-{', '.join(faults)}." if faults else "")).strip()
         reason = super().why_cant_move()
         if reason and "סרבו" in reason:
             off = [a.name for a in self.axes if not a.motor_on]
@@ -175,9 +201,9 @@ class LinkController(BaseController):
         self.log("err", "E-STOP (תוכנה): נשלחה עצירה וכיבוי מנועים. זה לא מחליף את לחצן החירום של המכונה.")
 
     def reset(self) -> None:
-        self.estop = self.alarm = False
-        for a in self.axes:
-            a.soft_hit = a.hw_hit = False
+        # Clears this program's E-stop latch. ABORT, driver faults and limit switches come from
+        # the controller inputs and stay until the hardware condition is gone.
+        self.estop = False
         self.log("tx", "RESET (מקומי)")
 
     def move_to(self, i: int, deg: float, verb: str = "MOVE") -> bool:
@@ -216,8 +242,10 @@ class LinkController(BaseController):
         self._send([f"{a.letter}ST" for a in self.axes])
 
     def set_output(self, bit: int, on: bool) -> None:
-        self.log("err", "הדלקת יציאה עוד לא נתמכת: הפקודה לא מופיעה בתיעוד שהתקבל. "
-                        "המצב מוצג לפי OP מהבקר.")
+        if not self.connected:
+            self.log("err", "אין חיבור לבקר.")
+            return
+        self._send([f"X{'OS' if on else 'OC'},{bit + 1}"])  # OS / OC count outputs from 1
 
     def send_raw(self, text: str) -> None:
         clauses = [c.strip() for c in text.replace("\r", ";").split(";") if c.strip()]

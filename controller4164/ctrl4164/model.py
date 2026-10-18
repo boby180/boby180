@@ -13,7 +13,8 @@ from pathlib import Path
 from typing import Callable
 
 N_AXES = 4
-N_BITS = 16
+N_BITS = 16      # digital inputs Din1..Din16 (IP bits 0-15)
+N_OUTPUTS = 8    # digital outputs (OP bits 0-7, OS/OC 1-8)
 AXIS_LETTERS = "XYZW"
 HW_MARGIN = 5.0  # limit switch sits this many degrees past the soft limit (simulation only)
 SETTINGS_FILE = "settings_4164.json"
@@ -32,10 +33,17 @@ STATUS_BITS = [
 ]
 INPUT_NAMES = ["E-Stop OK", "HOME J1", "HOME J2", "HOME J3", "HOME J4", "", "", "",
                "דלת סגורה", "לחץ אוויר", "", "", "", "", "", ""]
-OUTPUT_NAMES = ["מנורה ירוקה", "מנורה אדומה", "זמזם", "תפסנית", "ואקום", "", "", "",
-                "", "", "", "", "", "", "", ""]
-# EM, end of motion reason (SC-AT New Motion Modes manual). Other codes are shown as numbers.
-END_MOTION_REASONS = {4: "לימיט HL", 5: "לימיט LL", 10: "נעצר באירוע"}
+OUTPUT_NAMES = ["מנורה ירוקה", "מנורה אדומה", "זמזם", "תפסנית", "ואקום", "", "", ""]
+# EM, end of motion reason (SC-AT Users Manual 10.5.25, New Motion Modes manual for 10).
+END_MOTION_REASONS = {
+    0: "בתנועה / אחרי הדלקה", 1: "הסתיימה רגיל", 2: "מתג גבול FLS", 3: "מתג גבול RLS",
+    4: "לימיט HL", 5: "לימיט LL", 6: "תקלת מנוע", 7: "עצירה (ST/AB)", 8: "מנוע כובה",
+    9: "פרמטרים שגויים", 10: "נעצר באירוע",
+}
+# MF, motor fault reason (SC-AT Users Manual 10.5.42).
+MOTOR_FAULTS = {0: "", 1: "תקלת דרייבר", 2: "כניסת ABORT", 3: "שגיאת מיקום גדולה (PE>ER)",
+                4: "מנוע תקוע", 0x40: "שגיאת אנקודר", 0x80: "אנקודר מנותק"}
+SR_IN_TARGET = 0x20
 
 LogFn = Callable[[str, str], None]  # (kind: "tx" | "rx" | "err", text)
 
@@ -67,6 +75,10 @@ class Axis:
     ms: int | None = None         # MS, motion status from the controller (0 = stopped)
     sr: int | None = None         # SR, status register from the controller
     em: int | None = None         # EM, end of motion reason from the controller
+    mf: int | None = None         # MF, last motor fault reason
+    rls: bool | None = None       # reverse limit switch (IP bit 16 + 2i), None in simulation
+    fls: bool | None = None       # forward limit switch (IP bit 17 + 2i)
+    drv_fault: bool = False       # driver fault input (IP bit 24 + i)
 
     def bits(self, deg: float | None = None) -> int:
         return round((self.pos if deg is None else deg) * self.cfg.bits_per_deg)
@@ -81,11 +93,19 @@ class Axis:
 
     @property
     def at_hw_min(self) -> bool:
+        if self.rls is not None:
+            return self.rls
         return self.pos <= self.cfg.min - HW_MARGIN + EPS
 
     @property
     def at_hw_max(self) -> bool:
+        if self.fls is not None:
+            return self.fls
         return self.pos >= self.cfg.max + HW_MARGIN - EPS
+
+    @property
+    def in_target(self) -> bool | None:
+        return None if self.sr is None else bool(self.sr & SR_IN_TARGET)
 
     @property
     def moving(self) -> bool:
@@ -113,7 +133,7 @@ class BaseController:
         self.alarm = False
         self.soft_limits = True
         self.speed_pct = 40
-        self.outputs = [False] * N_BITS
+        self.outputs = [False] * N_OUTPUTS
 
     def set_soft_limits(self, on: bool) -> None:
         self.soft_limits = on
@@ -205,7 +225,7 @@ class SimController(BaseController):
     def __init__(self, n_axes: int = N_AXES, log: LogFn | None = None, axes: list[Axis] | None = None):
         super().__init__(axes if axes is not None else make_axes(n_axes), log)
         for a in self.axes:
-            a.ms = a.sr = a.em = None
+            a.ms = a.sr = a.em = a.mf = a.rls = a.fls = None
         self.manual_inputs = [False] * N_BITS
         self.manual_inputs[8] = True  # door closed
         self.manual_inputs[9] = True  # air pressure ok

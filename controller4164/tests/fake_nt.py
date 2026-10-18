@@ -6,13 +6,13 @@ import re
 import socket
 import threading
 
-CLAUSE = re.compile(r"^([A-Z])([A-Z]{2})(?:=(-?\d+))?$")
+CLAUSE = re.compile(r"^([A-Z])([A-Z]{2})(?:=(-?\d+)|,(\d+))?$")
 
 
 class FakeNT:
     def __init__(self):
         self.p = {L: {"PS": 0, "MO": 0, "MS": 0, "MM": 0, "SM": 0, "SP": 0, "AP": 0, "SR": 0,
-                      "EM": 0, "LL": -200000, "HL": 200000} for L in "XYZW"}
+                      "EM": 0, "MF": 0, "LL": -200000, "HL": 200000} for L in "XYZW"}
         self.ip, self.op = 0b101, 0b10
         self.received: list[str] = []
         self.srv = socket.socket()
@@ -26,7 +26,13 @@ class FakeNT:
         m = CLAUSE.match(c)
         if not m:
             return "?>"
-        L, kw, val = m.groups()
+        L, kw, val, arg = m.groups()
+        if kw in ("OS", "OC"):
+            if arg is None or not 1 <= int(arg) <= 8:
+                return "?>"
+            bit = 1 << (int(arg) - 1)
+            self.op = self.op | bit if kw == "OS" else self.op & ~bit
+            return ">"
         if kw in ("IP", "OP"):
             return f"{self.ip if kw == 'IP' else self.op}>"
         ax = self.p.get(L)

@@ -16,7 +16,7 @@ from PySide6.QtWidgets import (
 
 from .link import LinkController
 from .model import (
-    END_MOTION_REASONS, HW_MARGIN, INPUT_NAMES, N_BITS, OUTPUT_NAMES, SETTINGS_FILE, STATUS_BITS, Axis,
+    END_MOTION_REASONS, HW_MARGIN, INPUT_NAMES, MOTOR_FAULTS, N_BITS, N_OUTPUTS, OUTPUT_NAMES, SETTINGS_FILE, STATUS_BITS, Axis,
     SimController, app_dir, load_settings, save_settings,
 )
 from .protocol import LAN_PORTS, SERIAL_BAUDS, LanTransport, SerialTransport
@@ -182,14 +182,26 @@ class AxisPanel(QGroupBox):
             self.sub3.setText("מנוע: " + ("פעיל" if a.motor_on else "כבוי"))
         else:
             em = "—" if a.em is None else f"{a.em} {END_MOTION_REASONS.get(a.em, '')}".strip()
-            sr = "—" if a.sr is None else f"0x{a.sr & 0xFFFFFFFF:08X}"
-            self.sub3.setText(f"מנוע: {'פעיל' if a.motor_on else 'כבוי'}    MS: {a.ms}    EM: {em}    SR: {sr}")
+            parts = [f"מנוע: {'פעיל' if a.motor_on else 'כבוי'}", f"MS: {a.ms}", f"סיום: {em}"]
+            if a.in_target:
+                parts.append("במטרה")
+            if a.mf:
+                parts.append(f"תקלה MF={a.mf} {MOTOR_FAULTS.get(a.mf, '')}".rstrip())
+            if a.drv_fault:
+                parts.append("תקלת דרייבר")
+            self.sub3.setText("    ".join(parts))
         self.f_min.set("bad" if a.at_hw_min else "")
         self.f_max.set("bad" if a.at_hw_max else "")
         self.f_soft.set("warn" if a.at_soft_limit else "")
         self.f_home.set("ok" if a.at_home and a.homed else "")
         self.f_move.set("ok" if a.moving else "")
-        self.setStyleSheet("QGroupBox { border:2px solid #d62f2f; }" if a.hw_hit else "")
+        alarm = a.hw_hit or a.drv_fault or bool(a.mf)
+        if alarm != getattr(self, "_alarm_style", None):
+            self._alarm_style = alarm
+            self.setStyleSheet(
+                "QGroupBox { border:2px solid #d62f2f; border-radius:4px; margin-top:1.4em; }"
+                " QGroupBox::title { subcontrol-origin: margin; subcontrol-position: top right;"
+                " padding: 0 6px; color:#d62f2f; font-weight:bold; }" if alarm else "")
         self.bar.update()
 
 
@@ -381,11 +393,11 @@ class MainWindow(QMainWindow):
         self.in_leds = []
         for b in range(N_BITS):
             led = Led(14)
-            led.setToolTip(INPUT_NAMES[b] or f"IN{b}")
+            led.setToolTip(f"Din{b + 1}" + (f" (בסימולציה: {INPUT_NAMES[b]})" if INPUT_NAMES[b] else ""))
             self.in_leds.append(led)
             cell = QVBoxLayout()
             cell.addWidget(led, 0, Qt.AlignHCenter)
-            cell.addWidget(QLabel(f"I{b}"), 0, Qt.AlignHCenter)
+            cell.addWidget(QLabel(f"I{b + 1}"), 0, Qt.AlignHCenter)
             inl.addLayout(cell, b // 8, b % 8)
         ins.setLayoutDirection(Qt.LeftToRight)
         lay.addWidget(ins)
@@ -393,8 +405,8 @@ class MainWindow(QMainWindow):
         outs = QGroupBox("יציאות (OUT), לחץ להחלפה")
         outl = QGridLayout(outs)
         self.out_btns = []
-        for b in range(N_BITS):
-            btn = QPushButton(f"O{b}")
+        for b in range(N_OUTPUTS):
+            btn = QPushButton(f"O{b + 1}")
             btn.setCheckable(True)
             btn.setToolTip(OUTPUT_NAMES[b] or f"OUT{b}")
             btn.setStyleSheet(f"QPushButton:checked {{ background:{LED_COLORS['out']}; color:black; font-weight:bold; }}")

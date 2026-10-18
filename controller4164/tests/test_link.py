@@ -111,3 +111,39 @@ def test_lost_connection_is_reported():
     link.transport.sock.close()
     assert wait_for(lambda: not link.connected)
     link.close()
+
+
+def test_outputs_use_os_and_oc_counted_from_one():
+    nt, link, _ = connected_link()
+    link.set_output(2, True)
+    assert wait_for(lambda: nt.op == 0b110)
+    assert wait_for(lambda: link.outputs[2])
+    link.set_output(1, False)
+    assert wait_for(lambda: nt.op == 0b100)
+    assert "XOS,3" in nt.received and "XOC,2" in nt.received
+    link.close()
+
+
+def test_limit_switches_faults_and_abort_from_ip():
+    nt, link, logs = connected_link()
+    nt.ip = (1 << 0) | (1 << 19) | (1 << 22) | (1 << 25)   # Din1, Y FLS, W RLS, Y driver fault
+    nt.p["Y"]["MF"] = 1
+    assert wait_for(lambda: link.axes[1].fls)
+    y, w = link.axes[1], link.axes[3]
+    assert y.at_hw_max and not y.at_hw_min and w.at_hw_min
+    assert y.drv_fault and link.alarm and y.mf == 1
+    assert link.inputs()[0] and not any(link.inputs()[1:])
+    assert "תקלת דרייבר" in link.why_cant_move()
+    nt.ip = 1 << 28
+    assert wait_for(lambda: link.abort_in)
+    assert "ABORT" in link.why_cant_move()
+    nt.ip = 0
+    assert wait_for(lambda: not link.alarm)
+    link.close()
+
+
+def test_in_target_from_sr():
+    nt, link, _ = connected_link()
+    nt.p["X"]["SR"] = 0x20
+    assert wait_for(lambda: link.axes[0].in_target)
+    link.close()
