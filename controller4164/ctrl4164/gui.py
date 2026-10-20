@@ -394,8 +394,9 @@ class MainWindow(QMainWindow):
         save.clicked.connect(self._save_settings)
         load = QPushButton("טען הגדרות")
         load.clicked.connect(self._reload_settings)
-        self.sv_btn = QPushButton("שמור בבקר (SV)")
-        self.sv_btn.setToolTip("שומר את הפרמטרים של הבקר בזיכרון הפלאש שלו, כך שיישארו אחרי כיבוי")
+        self.sv_btn = QPushButton("כבה מנועים ושמור בבקר")
+        self.sv_btn.setToolTip("מכבה את המנועים בכל הצירים (MO=0) ושומר את הפרמטרים בפלאש של הבקר (XSV,1),\n"
+                               "כך שיישארו אחרי RS או כיבוי. תוכנית המאקרו לא נשמרת מחדש.")
         self.sv_btn.clicked.connect(self._save_flash)
         head.addWidget(self.sv_btn)
         head.addWidget(save)
@@ -631,10 +632,15 @@ class MainWindow(QMainWindow):
         if self.ctrl.simulated or not self.ctrl.connected:
             self.ctrl.save_flash()
             return
+        moving = [a.name for a in self.ctrl.axes if a.moving]
+        if moving:
+            QMessageBox.warning(self, "שמירה בבקר", f"{', '.join(moving)} בתנועה. עצור את התנועה ונסה שוב.")
+            return
         answer = QMessageBox.question(
             self, "שמירה בבקר",
-            "לשמור את כל הפרמטרים הנוכחיים של הבקר בזיכרון הפלאש שלו (SV)?\n"
-            "הערכים יחליפו את מה שנשמר בבקר עד עכשיו.")
+            "המנועים בכל הצירים יכובו (MO=0), ואז הפרמטרים של הבקר יישמרו בפלאש (XSV,1).\n\n"
+            "הערכים יחליפו את מה שנשמר בבקר עד עכשיו. תוכנית המאקרו לא משתנה.\n"
+            "אחרי השמירה צריך להדליק שוב את הסרבו.\n\nלהמשיך?")
         if answer == QMessageBox.Yes:
             self.ctrl.save_flash()
 

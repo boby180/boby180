@@ -237,9 +237,28 @@ class LinkController(BaseController):
         if self.connected:
             self._send_now(["XQK"])
 
-    def save_flash(self) -> None:
-        if self.connected:
-            self._send(["XSV"])
+    def save_flash(self) -> bool:
+        """Turn every motor off, then save the parameters (not the macro) with XSV,1.
+
+        The controller accepts SV only with all motors off and no motion (Users Manual 10.5.39).
+        """
+        if not self.connected:
+            self.log("err", "אין חיבור לבקר.")
+            return False
+        moving = [a.name for a in self.axes if a.moving]
+        if moving:
+            self.log("err", f"{', '.join(moving)} בתנועה. עצור את התנועה לפני שמירה בבקר.")
+            return False
+
+        def done(replies: list[Reply]) -> None:
+            if replies[-1].ok:
+                self.log("rx", "הפרמטרים נשמרו בפלאש של הבקר (XSV,1). המנועים כבויים.")
+            else:
+                self.log("err", "הבקר לא שמר (XSV,1 נדחה). בדוק שכל המנועים כבויים ושאין תנועה, "
+                                "והקוד בקונסולה: XEC")
+
+        self._send([f"{a.letter}MO=0" for a in self.axes] + ["XSV,1"], done)
+        return True
 
     def emergency_stop(self) -> None:
         self.estop = True

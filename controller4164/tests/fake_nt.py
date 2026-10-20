@@ -32,7 +32,12 @@ class FakeNT:
             return "SC-4M_P,300,4,300,250>"
         if kw == "QF":
             return f"{self.qf.get(int(idx or 0), 0)}>" if idx else "?>"
-        if kw in ("QE", "QK", "SV"):
+        if kw == "SV":
+            if any(ax["MO"] for ax in self.p.values()):
+                return "?>"  # SV needs all motors off
+            self.saved = arg or "all"
+            return ">"
+        if kw in ("QE", "QK"):
             return ">" if kw != "QE" or (arg or "").startswith("#") else "?>"
         if kw in ("OS", "OC"):
             if arg is None or not 1 <= int(arg) <= 8:

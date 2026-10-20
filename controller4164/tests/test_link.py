@@ -171,6 +171,27 @@ def test_home_macro_per_axis_servo_and_flash():
     assert not link.axes[0].motor_on
     assert link.move_to(3, 1.0) and not link.move_to(0, 1.0)
     link.kill_macros()
-    link.save_flash()
-    assert wait_for(lambda: "XQK" in nt.received and "XSV" in nt.received)
+    assert wait_for(lambda: "XQK" in nt.received)
+    link.close()
+
+
+def test_save_flash_turns_motors_off_then_saves_parameters():
+    nt, link, logs = connected_link()
+    link.set_servo(True)
+    assert wait_for(lambda: link.servo)
+    assert link.save_flash()
+    assert wait_for(lambda: getattr(nt, "saved", None) == "1")
+    i = nt.received.index("XSV,1")
+    assert {"XMO=0", "YMO=0", "ZMO=0", "WMO=0"} <= set(nt.received[i - 4:i])
+    assert wait_for(lambda: not link.servo)
+    assert any("נשמרו" in t for k, t in logs if k == "rx")
+    link.close()
+
+
+def test_save_flash_refused_while_moving():
+    nt, link, _ = connected_link()
+    nt.p["X"]["MS"] = 1
+    assert wait_for(lambda: link.axes[0].moving)
+    assert not link.save_flash()
+    assert not any(c.startswith("XSV") for c in nt.received)
     link.close()

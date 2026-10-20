@@ -209,8 +209,9 @@ class BaseController:
             self.jog_stop(i)
             self.axes[i].target = None
 
-    def save_flash(self) -> None:
+    def save_flash(self) -> bool:
         self.log("err", "שמירה לפלאש (SV) אפשרית רק בחיבור לבקר.")
+        return False
 
     def move_to(self, i: int, deg: float, verb: str = "MOVE") -> bool:
         raise NotImplementedError
