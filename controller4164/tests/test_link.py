@@ -64,7 +64,7 @@ def test_servo_and_point_to_point_move():
     assert link.move_to(2, 12.345)
     assert wait_for(lambda: abs(link.axes[2].pos - 12.345) < 1e-9)
     assert "ZAP=12345" in nt.received and "ZBG" in nt.received and "ZMM=0" in nt.received
-    assert "ZSP=60000" in nt.received        # 120 deg/s * 50% * 1000 bits/deg
+    assert "ZSP=3000" in nt.received         # 6 deg/s * 50% * 1000 bits/deg
     link.close()
 
 
@@ -74,7 +74,7 @@ def test_jog_and_stop_and_estop():
     assert wait_for(lambda: link.servo)
     assert link.jog_start(0, -1)
     assert wait_for(lambda: link.axes[0].moving)
-    assert "XMM=1" in nt.received and "XSP=-48000" in nt.received
+    assert "XMM=1" in nt.received and "XSP=-6000" in nt.received
     link.jog_stop(0)
     assert wait_for(lambda: not link.axes[0].moving)
     link.emergency_stop()

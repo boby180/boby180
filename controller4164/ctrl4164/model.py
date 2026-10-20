@@ -55,7 +55,7 @@ EPS = 1e-6
 class AxisSettings:
     min: float = -200.0
     max: float = 200.0
-    vmax: float = 120.0          # deg/s at 100% speed
+    vmax: float = 6.0            # deg/s at 100% speed
     home: float = 0.0
     bits_per_deg: float = 1000.0  # constant: encoder bits per degree
 
@@ -136,7 +136,7 @@ class BaseController:
         self.estop = False
         self.alarm = False
         self.soft_limits = True
-        self.speed_pct = 40
+        self.speed_pct = 100  # with vmax 6 deg/s the default speed is 6 deg/s
         self.outputs = [False] * N_OUTPUTS
         self.firmware = ""
         self.home_macro = ""   # e.g. "#HOME_{L}"; empty = Home moves to the Home position

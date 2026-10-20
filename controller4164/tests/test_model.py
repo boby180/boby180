@@ -6,7 +6,15 @@ def ready(n=4):
     c = SimController(n, log=lambda kind, text: logs.append((kind, text)))
     c.connect("SIM", 115200)
     c.set_servo(True)
+    for a in c.axes:
+        a.cfg.vmax = 120.0  # fast axes keep the simulated moves short
     return c, logs
+
+
+def test_defaults_are_6_deg_per_s():
+    c = SimController()
+    assert c.axes[0].cfg.vmax == 6.0 and c.speed_pct == 100
+    assert c.speed_bits(c.axes[0]) == 6000   # 6 deg/s * 1000 bits/deg
 
 
 def run(c, seconds, dt=0.01):

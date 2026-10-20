@@ -24,7 +24,7 @@ from .version import __version__
 
 SIM_PORT = "סימולציה"
 LAN_PORT = "Ethernet (LAN)"
-DEFAULT_IP = "192.168.1.254"
+DEFAULT_IP = "10.0.0.105"
 SIM_NOTE = "מצב סימולציה: הפקודות לא נשלחות לבקר. לחיבור אמיתי בחר Ethernet או פורט COM ולחץ התחבר."
 LINK_NOTE = ("מחובר לבקר SC-NT-4M. הפקודות זזות באמת. עצירת החירום בתוכנה שולחת AB ו-MO=0, "
              "והיא לא מחליפה את לחצן החירום של המכונה.")
