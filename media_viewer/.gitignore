@@ -1,0 +1,5 @@
+build/
+dist/
+*.spec
+media_viewer.ico
+.venv/

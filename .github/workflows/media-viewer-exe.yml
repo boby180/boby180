@@ -1,0 +1,57 @@
+name: Media Viewer EXE
+
+on:
+  push:
+    paths:
+      - "media_viewer/**"
+      - ".github/workflows/media-viewer-exe.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: media_viewer
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: python -m pip install -r requirements.txt pyinstaller pytest
+      - name: Test
+        run: python -m pytest -q tests
+      - name: Build EXE
+        shell: bash
+        run: |
+          VER=$(python -c "from mediaviewer.version import __version__; print(__version__)")
+          echo "VER=$VER" >> "$GITHUB_ENV"
+          python make_icon.py
+          python -m PyInstaller --noconfirm --clean --onefile --windowed --icon media_viewer.ico --name "MediaViewer-v$VER" run.py
+      - name: Check the EXE opens photos and plays videos (MP4 and AVI)
+        shell: pwsh
+        run: |
+          $exe = "dist\MediaViewer-v$env:VER.exe"
+          $out = "$PWD\selftest.txt"
+          $files = @("tests\data\clip.mp4", "tests\data\clip.avi", "tests\data\photo.jpg", "tests\data\anim.gif") | ForEach-Object { "`"$PWD\$_`"" }
+          $p = Start-Process -FilePath $exe -ArgumentList (@("--selftest", "`"$out`"") + $files) -Wait -PassThru
+          if (Test-Path $out) { Get-Content $out }
+          if ($p.ExitCode -ne 0) { throw "self-test failed (exit $($p.ExitCode))" }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MediaViewer-v${{ env.VER }}
+          path: media_viewer/dist/MediaViewer-v${{ env.VER }}.exe
+      - name: Publish download
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: media-viewer-v${{ env.VER }}
+          name: צופה מדיה v${{ env.VER }}
+          target_commitish: ${{ github.sha }}
+          make_latest: false
+          body: |
+            צופה מדיה לווינדוס. מורידים את MediaViewer-v${{ env.VER }}.exe ולוחצים עליו פעמיים. לא צריך להתקין.
+          files: media_viewer/dist/MediaViewer-v${{ env.VER }}.exe
