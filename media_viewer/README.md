@@ -4,7 +4,7 @@
 
 ## הורדה והפעלה (EXE)
 
-1. בדף [Releases](https://github.com/boby180/boby180/releases) של המאגר, פתח את "צופה מדיה" והורד את `MediaViewer-v1.0.0.exe`.
+1. בדף [Releases](https://github.com/boby180/boby180/releases) של המאגר, פתח את "צופה מדיה" והורד את `MediaViewer-v1.0.1.exe`.
 2. לחץ עליו פעמיים. ההפעלה הראשונה לוקחת כמה שניות.
    אם Windows מציג "Windows protected your PC", לחץ "More info" ואז "Run anyway". ההודעה מופיעה כי לתוכנה אין חתימה דיגיטלית בתשלום.
 3. פותחים קבצים או תיקייה מהסרגל, או גוררים אותם לחלון.

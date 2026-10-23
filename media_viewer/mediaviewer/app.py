@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QToolButton, QVBoxLayout, QWidget,
 )
 
+from .icons import icon
 from .media import ANIMATED_EXT, IMAGE_EXT, VIDEO_EXT, Playlist, collect_files, ext, fmt_size, fmt_time
 from .version import __version__
 from .view import MediaView
@@ -189,7 +190,9 @@ class MainWindow(QMainWindow):
         a = QAction(text, self)
         a.setToolTip(tip)
         a.setCheckable(checkable)
-        if icon is not None:
+        if isinstance(icon, QIcon):
+            a.setIcon(icon)
+        elif icon is not None:
             a.setIcon(self.style().standardIcon(icon))
         a.triggered.connect(slot)
         return a
@@ -204,7 +207,7 @@ class MainWindow(QMainWindow):
         tb.addAction(self._act("פתיחת קבצים", "פתיחת קבצים (O)", self.open_files, icon=QStyle.SP_DialogOpenButton))
         tb.addAction(self._act("פתיחת תיקייה", "פתיחת תיקייה שלמה, כולל תתי-תיקיות", self.open_folder, icon=QStyle.SP_DirOpenIcon))
         tb.addSeparator()
-        self.a_auto = self._act("ניגון רצוף", "מעבר אוטומטי לקובץ הבא (A)", self._toggled, True, QStyle.SP_MediaSeekForward)
+        self.a_auto = self._act("ניגון רצוף", "מעבר אוטומטי לקובץ הבא (A)", self._toggled, True, icon("next", ACCENT))
         self.a_shuffle = self._act("אקראי", "סדר אקראי (S)", self._toggled, True)
         self.a_loop = self._act("חזרה", "חזרה להתחלה בסוף הרשימה (R)", self._toggled, True)
         for a in (self.a_auto, self.a_shuffle, self.a_loop):
@@ -221,7 +224,7 @@ class MainWindow(QMainWindow):
         tb.addWidget(spacer)
         self.a_list = self._act("רשימה", "הצגת / הסתרת רשימת הקבצים (P)", self._list_toggled, True, QStyle.SP_FileDialogListView)
         tb.addAction(self.a_list)
-        tb.addAction(self._act("מסך מלא", "מסך מלא (F)", self.toggle_full, icon=QStyle.SP_TitleBarMaxButton))
+        tb.addAction(self._act("מסך מלא", "מסך מלא (F)", self.toggle_full, icon=icon("full")))
         tb.addAction(self._act("עזרה", "קיצורי מקשים", self.show_help, icon=QStyle.SP_MessageBoxQuestion))
 
     def _build_list(self):
@@ -255,7 +258,7 @@ class MainWindow(QMainWindow):
         v.addWidget(self.list, 1)
         self._thumb_timer = QTimer(self, singleShot=True, interval=60)
         self._thumb_timer.timeout.connect(self._load_visible_thumbs)
-        self._video_icon = self.style().standardIcon(QStyle.SP_MediaPlay)
+        self._video_icon = icon("video", "#8f96a1")
         self._image_icon = self.style().standardIcon(QStyle.SP_FileIcon)
 
     def _build_controls(self):
@@ -265,10 +268,11 @@ class MainWindow(QMainWindow):
         h = QHBoxLayout(self.controls)
         h.setContentsMargins(10, 6, 10, 6)
 
-        def btn(icon=None, text=None, tip="", slot=None):
+        def btn(name=None, text=None, tip="", slot=None):
             b = QToolButton()
-            if icon is not None:
-                b.setIcon(self.style().standardIcon(icon))
+            b.setIconSize(QSize(20, 20))
+            if name:
+                b.setIcon(icon(name))
             if text:
                 b.setText(text)
             b.setToolTip(tip)
@@ -277,10 +281,10 @@ class MainWindow(QMainWindow):
             b.clicked.connect(slot)
             return b
 
-        h.addWidget(btn(QStyle.SP_MediaSkipBackward, tip="הקודם (←)", slot=self.prev))
-        self.play_btn = btn(QStyle.SP_MediaPlay, tip="ניגון / השהיה (רווח)", slot=self.toggle_play)
+        h.addWidget(btn("prev", tip="הקודם (←)", slot=self.prev))
+        self.play_btn = btn("play", tip="ניגון / השהיה (רווח)", slot=self.toggle_play)
         h.addWidget(self.play_btn)
-        h.addWidget(btn(QStyle.SP_MediaSkipForward, tip="הבא (→)", slot=lambda: self.next()))
+        h.addWidget(btn("next", tip="הבא (→)", slot=lambda: self.next()))
         self.t_cur = QLabel("0:00")
         self.seek = QSlider(Qt.Horizontal)
         self.seek.setFocusPolicy(Qt.NoFocus)
@@ -291,7 +295,7 @@ class MainWindow(QMainWindow):
         h.addWidget(self.t_cur)
         h.addWidget(self.seek, 1)
         h.addWidget(self.t_dur)
-        self.mute_btn = btn(QStyle.SP_MediaVolume, tip="השתקה (M)", slot=self.toggle_mute)
+        self.mute_btn = btn("volume", tip="השתקה (M)", slot=self.toggle_mute)
         h.addWidget(self.mute_btn)
         self.vol = QSlider(Qt.Horizontal)
         self.vol.setRange(0, 100)
@@ -644,8 +648,7 @@ class MainWindow(QMainWindow):
         self._seeking = False
 
     def _play_state(self, st):
-        icon = QStyle.SP_MediaPause if st == QMediaPlayer.PlayingState else QStyle.SP_MediaPlay
-        self.play_btn.setIcon(self.style().standardIcon(icon))
+        self.play_btn.setIcon(icon("pause" if st == QMediaPlayer.PlayingState else "play"))
 
     def seek_by(self, ms):
         item = self.pl.current()
@@ -666,7 +669,7 @@ class MainWindow(QMainWindow):
 
     def _mute_icon(self):
         muted = self.audio.isMuted() or self.vol.value() == 0
-        self.mute_btn.setIcon(self.style().standardIcon(QStyle.SP_MediaVolumeMuted if muted else QStyle.SP_MediaVolume))
+        self.mute_btn.setIcon(icon("muted" if muted else "volume"))
 
     def step_speed(self, d):
         self.speed.setCurrentIndex(max(0, min(len(SPEEDS) - 1, self.speed.currentIndex() + d)))
