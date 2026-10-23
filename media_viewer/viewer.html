@@ -1,0 +1,787 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+</head>
+<body>
+<!-- ARTIFACT-START -->
+<title>צופה מדיה</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Assistant:wght@400;600;700&family=Secular+One&family=JetBrains+Mono:wght@500&display=swap">
+<style>
+/* Layout: one-screen app. Top bar, playlist on the right (RTL), dark stage that fills the rest; video controls float over the stage. */
+:root {
+  --bg: #0e1013;          /* stage, darkest so the picture leads */
+  --panel: #171a1f;       /* bars and playlist */
+  --raise: #222730;       /* hover, inputs */
+  --line: #2c323c;
+  --fg: #e8e6e1;
+  --muted: #8f96a1;
+  --accent: #f2b63d;      /* projector-lamp amber */
+  --accent-ink: #1a1405;
+  --bad: #ef6f5e;
+  --display: "Secular One", "Assistant", "Segoe UI", Arial, sans-serif;
+  --body: "Assistant", "Segoe UI", Arial, sans-serif;
+  --mono: "JetBrains Mono", Consolas, "Courier New", monospace;
+  color-scheme: dark;
+}
+html, body { height: 100%; }
+body { margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.4 var(--body); overflow: hidden; }
+* { box-sizing: border-box; }
+button, select, input { font: inherit; color: inherit; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+[hidden] { display: none !important; }
+
+#app { height: 100%; display: grid; grid-template-rows: auto 1fr; }
+
+/* ---------- top bar ---------- */
+.bar {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+  padding-block: 8px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  background: var(--panel); border-bottom: 1px solid var(--line);
+}
+.brand { font-family: var(--display); font-size: 20px; letter-spacing: .3px; margin-inline-end: 8px; white-space: nowrap; }
+.brand b { color: var(--accent); font-weight: inherit; }
+.group { display: flex; align-items: center; gap: 4px; }
+.sep { width: 1px; height: 24px; background: var(--line); margin-inline: 4px; }
+.spacer { flex: 1; }
+.btn {
+  display: inline-flex; align-items: center; gap: 6px; height: 34px; padding: 0 12px;
+  background: var(--raise); border: 1px solid var(--line); border-radius: 6px; cursor: pointer; white-space: nowrap;
+}
+.btn:hover { border-color: var(--muted); }
+.btn.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 700; }
+.btn.icon { width: 34px; padding: 0; justify-content: center; }
+.btn.toggle[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
+.btn svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; flex: none; }
+.lbl { font-size: 13px; color: var(--muted); }
+select, .num { height: 34px; background: var(--raise); border: 1px solid var(--line); border-radius: 6px; padding: 0 6px; }
+.num { width: 52px; text-align: center; font-family: var(--mono); font-size: 13px; }
+
+/* ---------- body ---------- */
+.main { display: grid; grid-template-columns: 300px 1fr; min-height: 0; }
+.main.no-list { grid-template-columns: 1fr; }
+.main.no-list .list { display: none; }
+
+.list { background: var(--panel); border-inline-end: 1px solid var(--line); display: grid; grid-template-rows: auto 1fr; min-height: 0; min-width: 0; }
+.list-head { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 12px; border-bottom: 1px solid var(--line); align-items: center; }
+.list-head select { flex: 1; min-width: 0; }
+.count { font-size: 12px; font-variant-numeric: tabular-nums; flex-basis: 100%; color: var(--muted); white-space: nowrap; }
+ol.items { list-style: none; margin: 0; padding: 6px; overflow-y: auto; }
+.item {
+  display: grid; grid-template-columns: 56px 1fr; gap: 10px; align-items: center;
+  padding: 6px; border-radius: 6px; cursor: pointer; border: 1px solid transparent;
+}
+.item:hover { background: var(--raise); }
+.item.on { background: var(--raise); border-color: var(--accent); }
+.thumb { width: 56px; height: 40px; border-radius: 4px; background: var(--bg); overflow: hidden; display: grid; place-items: center; color: var(--muted); }
+.thumb img { width: 100%; height: 100%; object-fit: cover; }
+.thumb svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 2; }
+.meta { min-width: 0; }
+.name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 14px; direction: ltr; text-align: right; }
+.sub { font-size: 12px; font-variant-numeric: tabular-nums; color: var(--muted); }
+.item.bad .sub { color: var(--bad); }
+
+/* ---------- stage ---------- */
+.stage { position: relative; overflow: hidden; background: var(--bg); min-width: 0; min-height: 0; touch-action: none; }
+.stage.zoomed { cursor: grab; }
+.stage.dragging { cursor: grabbing; }
+.frame { position: absolute; inset: 0; display: grid; place-items: center; }
+.frame img, .frame video {
+  max-width: 100%; max-height: 100%; display: block;
+  transform-origin: center center; will-change: transform; user-select: none; -webkit-user-drag: none;
+}
+.frame video { width: auto; height: auto; }
+
+.hud {
+  position: absolute; top: 10px; inset-inline-start: max(10px, env(safe-area-inset-right, 0px));
+  display: flex; gap: 6px; align-items: center; pointer-events: none;
+}
+.chip { background: color-mix(in srgb, var(--panel) 85%, transparent); border: 1px solid var(--line); border-radius: 999px; padding: 3px 10px; font-family: var(--mono); font-size: 12px; color: var(--fg); }
+.chip.amber { color: var(--accent); border-color: var(--accent); }
+.title-chip { max-width: 50vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: ltr; }
+
+.zoombox { position: absolute; top: 10px; inset-inline-end: max(10px, env(safe-area-inset-left, 0px)); display: flex; flex-direction: column; gap: 4px; }
+.zoombox .btn { background: color-mix(in srgb, var(--panel) 85%, transparent); font-family: var(--mono); font-size: 12px; }
+
+.notice {
+  position: absolute; inset: 0; display: grid; place-items: center; text-align: center; padding: 24px;
+}
+.notice .card { max-width: 440px; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 20px 22px; }
+.notice h2 { font-family: var(--display); font-weight: 400; margin: 0 0 6px; font-size: 22px; text-wrap: balance; }
+.notice p { margin: 0 0 10px; color: var(--muted); }
+.notice .row { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; }
+
+.drop { position: absolute; inset: 12px; border: 2px dashed var(--accent); border-radius: 12px; display: grid; place-items: center; background: color-mix(in srgb, var(--bg) 80%, transparent); font-family: var(--display); font-size: 26px; color: var(--accent); pointer-events: none; }
+
+.progress-slide { position: absolute; bottom: 0; inset-inline: 0; height: 3px; background: transparent; }
+.progress-slide i { display: block; height: 100%; width: 0; background: var(--accent); }
+
+/* ---------- video controls ---------- */
+.vc {
+  position: absolute; inset-inline: 12px; bottom: 12px;
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px; direction: ltr;
+  background: color-mix(in srgb, var(--panel) 92%, transparent); border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px;
+  transition: opacity .25s;
+}
+.idle .vc, .idle .zoombox, .idle .hud { opacity: 0; pointer-events: none; }
+.vc .time { font-family: var(--mono); font-size: 12px; color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.vc input[type=range] { accent-color: var(--accent); }
+#seek { flex: 1 1 200px; min-width: 120px; }
+#vol { width: 90px; }
+
+/* ---------- help ---------- */
+.help { position: absolute; inset: 0; background: color-mix(in srgb, var(--bg) 75%, transparent); display: grid; place-items: center; padding: 16px; z-index: 5; }
+.help .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 18px 22px; max-width: 620px; width: 100%; max-height: 100%; overflow: auto; }
+.help h2 { font-family: var(--display); font-weight: 400; margin: 0 0 10px; }
+.keys { display: grid; grid-template-columns: auto 1fr; gap: 6px 16px; }
+kbd { font-family: var(--mono); font-size: 12px; background: var(--raise); border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 4px; padding: 1px 6px; white-space: nowrap; }
+.formats { color: var(--muted); font-size: 13px; margin-top: 12px; }
+
+@media (max-width: 720px) {
+  .main { grid-template-columns: 1fr; grid-template-rows: 38% 1fr; }
+  .list { border-inline-end: 0; border-bottom: 1px solid var(--line); }
+  .main.no-list { grid-template-rows: 1fr; }
+  .hide-sm { display: none !important; }
+  #vol { width: 60px; }
+}
+@media (prefers-reduced-motion: reduce) { .vc { transition: none; } }
+</style>
+
+<div id="app">
+  <header class="bar">
+    <div class="brand">צופה <b>מדיה</b></div>
+    <div class="group">
+      <button class="btn primary" id="openFiles" title="פתיחת קבצים (O)">
+        <svg viewBox="0 0 24 24"><path d="M4 4h10l6 6v10H4z"/><path d="M14 4v6h6"/></svg>פתיחת קבצים</button>
+      <button class="btn" id="openFolder" title="פתיחת תיקייה שלמה (כולל תתי-תיקיות)">
+        <svg viewBox="0 0 24 24"><path d="M3 6h7l2 2h9v11H3z"/></svg>פתיחת תיקייה</button>
+      <input type="file" id="fileInput" multiple accept="image/*,video/*,.heic,.heif,.mkv,.mov,.avi,.wmv,.flv,.3gp,.mts,.m2ts,.ts" hidden>
+      <input type="file" id="folderInput" webkitdirectory multiple hidden>
+    </div>
+    <div class="sep hide-sm"></div>
+    <div class="group">
+      <button class="btn toggle" id="autoNext" aria-pressed="true" title="מעבר אוטומטי לקובץ הבא (A)">
+        <svg viewBox="0 0 24 24"><path d="M5 5l10 7-10 7z"/><path d="M19 5v14"/></svg>ניגון רצוף</button>
+      <button class="btn toggle icon" id="shuffle" aria-pressed="false" title="סדר אקראי (S)">
+        <svg viewBox="0 0 24 24"><path d="M16 4h4v4"/><path d="M4 20L20 4"/><path d="M20 16v4h-4"/><path d="M15 15l5 5"/><path d="M4 4l5 5"/></svg></button>
+      <button class="btn toggle icon" id="loop" aria-pressed="false" title="חזרה להתחלה בסוף הרשימה (R)">
+        <svg viewBox="0 0 24 24"><path d="M17 2l4 4-4 4"/><path d="M3 11V9a3 3 0 0 1 3-3h15"/><path d="M7 22l-4-4 4-4"/><path d="M21 13v2a3 3 0 0 1-3 3H3"/></svg></button>
+      <label class="lbl hide-sm" for="slideSec">תמונה כל</label>
+      <input class="num hide-sm" id="slideSec" type="number" min="1" max="600" value="5" title="כמה שניות להציג כל תמונה בניגון רצוף">
+      <span class="lbl hide-sm">שנ׳</span>
+    </div>
+    <div class="spacer"></div>
+    <div class="group">
+      <button class="btn icon toggle" id="listToggle" aria-pressed="true" title="הצגת/הסתרת רשימת הקבצים (P)">
+        <svg viewBox="0 0 24 24"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></svg></button>
+      <button class="btn icon" id="fullBtn" title="מסך מלא (F)">
+        <svg viewBox="0 0 24 24"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg></button>
+      <button class="btn icon" id="helpBtn" title="קיצורי מקשים (?)">
+        <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M9.5 9a2.5 2.5 0 1 1 3.5 2.3c-.6.3-1 .9-1 1.6V14M12 17h.01"/></svg></button>
+    </div>
+  </header>
+
+  <div class="main" id="main">
+    <aside class="list" aria-label="רשימת קבצים">
+      <div class="list-head">
+        <select id="filter" aria-label="סינון">
+          <option value="all">הכול</option>
+          <option value="image">תמונות בלבד</option>
+          <option value="video">סרטונים בלבד</option>
+        </select>
+        <select id="sort" aria-label="מיון">
+          <option value="name">לפי שם</option>
+          <option value="date">לפי תאריך</option>
+          <option value="size">לפי גודל</option>
+        </select>
+        <span class="count" id="count"></span>
+      </div>
+      <ol class="items" id="items"></ol>
+    </aside>
+
+    <section class="stage" id="stage" aria-label="תצוגה">
+      <div class="frame" id="frame">
+        <img id="img" alt="" draggable="false" hidden>
+        <video id="vid" playsinline preload="metadata" hidden></video>
+      </div>
+
+      <div class="hud" id="hud">
+        <span class="chip" id="posChip"></span>
+        <span class="chip title-chip" id="nameChip"></span>
+        <span class="chip" id="infoChip"></span>
+        <span class="chip amber" id="sampleChip" hidden>קבצי דוגמה</span>
+      </div>
+
+      <div class="zoombox" id="zoombox">
+        <button class="btn icon" id="zIn" title="הגדלה (+ או גלגלת העכבר)">+</button>
+        <button class="btn icon" id="zLevel" title="חזרה לגודל המסך (0)">100%</button>
+        <button class="btn icon" id="zOut" title="הקטנה (-)">−</button>
+        <button class="btn icon" id="z1" title="גודל אמיתי, פיקסל מול פיקסל (1)">1:1</button>
+      </div>
+
+      <div class="notice" id="notice" hidden><div class="card"><h2 id="noticeTitle"></h2><p id="noticeText"></p><div class="row" id="noticeRow"></div></div></div>
+      <div class="drop" id="drop" hidden>שחרר כאן קבצים או תיקייה</div>
+      <div class="progress-slide"><i id="slideBar"></i></div>
+
+      <div class="vc" id="vc" hidden>
+        <button class="btn icon" id="vPrev" title="הקודם">
+          <svg viewBox="0 0 24 24"><path d="M19 5L9 12l10 7z"/><path d="M5 5v14"/></svg></button>
+        <button class="btn icon" id="vPlay" title="ניגון / השהיה (רווח)">
+          <svg viewBox="0 0 24 24" id="playIcon"><path d="M7 5l12 7-12 7z"/></svg></button>
+        <button class="btn icon" id="vNext" title="הבא">
+          <svg viewBox="0 0 24 24"><path d="M5 5l10 7-10 7z"/><path d="M19 5v14"/></svg></button>
+        <span class="time" id="tCur">0:00</span>
+        <input type="range" id="seek" min="0" max="1000" value="0" step="1" aria-label="מיקום בסרטון">
+        <span class="time" id="tDur">0:00</span>
+        <button class="btn icon" id="vMute" title="השתקה (M)">
+          <svg viewBox="0 0 24 24"><path d="M4 9h4l5-4v14l-5-4H4z"/><path d="M17 9a4 4 0 0 1 0 6" id="volWave"/></svg></button>
+        <input type="range" id="vol" min="0" max="1" step="0.05" value="1" aria-label="עוצמת קול">
+        <select id="speed" aria-label="מהירות" title="מהירות ניגון ([ ו-])">
+          <option value="0.25">×0.25</option><option value="0.5">×0.5</option><option value="0.75">×0.75</option>
+          <option value="1" selected>×1</option><option value="1.25">×1.25</option><option value="1.5">×1.5</option>
+          <option value="2">×2</option><option value="3">×3</option>
+        </select>
+      </div>
+
+      <div class="help" id="help" hidden>
+        <div class="card" dir="rtl">
+          <h2>קיצורי מקשים</h2>
+          <div class="keys">
+            <span><kbd>→</kbd> <kbd>←</kbd></span><span>הקובץ הבא / הקודם (גם <kbd>PgDn</kbd> <kbd>PgUp</kbd>)</span>
+            <span><kbd>רווח</kbd></span><span>ניגון / השהיה של סרטון, או הפעלה/עצירה של מצגת תמונות</span>
+            <span><kbd>+</kbd> <kbd>−</kbd></span><span>הגדלה / הקטנה (גם גלגלת העכבר, במקום שהעכבר מצביע)</span>
+            <span><kbd>0</kbd></span><span>חזרה לגודל המסך</span>
+            <span><kbd>1</kbd></span><span>גודל אמיתי, פיקסל מול פיקסל</span>
+            <span><kbd>Shift</kbd>+חצים</span><span>הזזת התמונה כשהיא מוגדלת (או גרירה עם העכבר)</span>
+            <span>לחיצה כפולה</span><span>הגדלה פי 2.5 במקום הלחיצה / חזרה לגודל המסך</span>
+            <span><kbd>Ctrl</kbd>+<kbd>→</kbd> <kbd>←</kbd></span><span>קפיצה של 5 שניות קדימה / אחורה בסרטון</span>
+            <span><kbd>J</kbd> <kbd>L</kbd></span><span>קפיצה של 10 שניות אחורה / קדימה</span>
+            <span><kbd>↑</kbd> <kbd>↓</kbd></span><span>עוצמת קול</span>
+            <span><kbd>[</kbd> <kbd>]</kbd></span><span>האטה / האצה של הסרטון</span>
+            <span><kbd>M</kbd></span><span>השתקה</span>
+            <span><kbd>A</kbd> <kbd>S</kbd> <kbd>R</kbd></span><span>ניגון רצוף / סדר אקראי / חזרה בסוף הרשימה</span>
+            <span><kbd>F</kbd></span><span>מסך מלא</span>
+            <span><kbd>P</kbd></span><span>הצגת/הסתרת רשימת הקבצים</span>
+            <span><kbd>O</kbd></span><span>פתיחת קבצים</span>
+            <span><kbd>Esc</kbd></span><span>סגירת חלון זה</span>
+          </div>
+          <p class="formats">
+            תמונות: JPG, PNG, GIF, WEBP, BMP, AVIF, SVG, ICO, ו-HEIC של אייפון (דורש אינטרנט בפעם הראשונה).<br>
+            סרטונים: MP4, MOV, WEBM, MKV, M4V, OGV, 3GP. קבצי AVI, WMV ו-FLV ישנים לרוב לא מתנגנים בדפדפן; הם יסומנו ויידלגו.<br>
+            הקבצים נפתחים רק במחשב שלך ולא נשלחים לשום מקום.
+          </p>
+          <div class="row" style="display:flex;justify-content:flex-start;margin-top:8px"><button class="btn primary" id="helpClose">סגירה</button></div>
+        </div>
+      </div>
+    </section>
+  </div>
+</div>
+
+<script>
+(() => {
+  const $ = id => document.getElementById(id);
+  const IMG_EXT = new Set(['jpg','jpeg','jfif','pjpeg','png','apng','gif','webp','bmp','avif','svg','ico','heic','heif','tif','tiff']);
+  const VID_EXT = new Set(['mp4','m4v','mov','webm','mkv','ogv','ogg','3gp','3g2','avi','wmv','flv','mpg','mpeg','ts','mts','m2ts']);
+  const HEIC_LIB = 'https://cdnjs.cloudflare.com/ajax/libs/heic2any/0.0.4/heic2any.min.js';
+
+  const stage = $('stage'), img = $('img'), vid = $('vid');
+  let items = [];          // {name, path, url, kind, size, date, file, sample, bad}
+  let view = [];           // indices into items after filter/sort
+  let pos = -1;            // index into view
+  let history = [];
+  let slideTimer = null, slideStart = 0, slidePaused = false, slideRaf = 0;
+  const z = { s: 1, x: 0, y: 0 };
+
+  // ---------- settings ----------
+  const settings = { autoNext: true, shuffle: false, loop: false, slideSec: 5, list: true, vol: 1, muted: false, filter: 'all', sort: 'name' };
+  try { Object.assign(settings, JSON.parse(localStorage.getItem('mediaViewer') || '{}')); } catch (e) {}
+  const save = () => { try { localStorage.setItem('mediaViewer', JSON.stringify(settings)); } catch (e) {} };
+
+  function syncToggles() {
+    $('autoNext').setAttribute('aria-pressed', settings.autoNext);
+    $('shuffle').setAttribute('aria-pressed', settings.shuffle);
+    $('loop').setAttribute('aria-pressed', settings.loop);
+    $('listToggle').setAttribute('aria-pressed', settings.list);
+    $('main').classList.toggle('no-list', !settings.list);
+    $('slideSec').value = settings.slideSec;
+    $('filter').value = settings.filter;
+    $('sort').value = settings.sort;
+    vid.volume = settings.vol; vid.muted = settings.muted;
+    $('vol').value = settings.muted ? 0 : settings.vol;
+  }
+
+  // ---------- helpers ----------
+  const ext = n => (n.split('.').pop() || '').toLowerCase();
+  function kindOf(f) {
+    const e = ext(f.name);
+    if (IMG_EXT.has(e)) return 'image';
+    if (VID_EXT.has(e)) return 'video';
+    if (f.type.startsWith('image/')) return 'image';
+    if (f.type.startsWith('video/')) return 'video';
+    return null;
+  }
+  const fmtTime = t => {
+    if (!isFinite(t)) return '0:00';
+    t = Math.floor(t);
+    const h = Math.floor(t / 3600), m = Math.floor(t / 60) % 60, s = t % 60;
+    return (h ? h + ':' + String(m).padStart(2, '0') : m) + ':' + String(s).padStart(2, '0');
+  };
+  const fmtSize = b => b == null ? '' : b < 1024 * 1024 ? (b / 1024).toFixed(0) + ' KB' : b < 1024 ** 3 ? (b / 1048576).toFixed(1) + ' MB' : (b / 1024 ** 3).toFixed(2) + ' GB';
+  const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
+
+  // ---------- loading files ----------
+  function setFiles(files) {
+    const list = [];
+    for (const f of files) {
+      const kind = kindOf(f);
+      if (!kind) continue;
+      list.push({ name: f.name, path: f.webkitRelativePath || f._path || f.name, kind, size: f.size, date: f.lastModified, file: f, url: null });
+    }
+    if (!list.length) { showNotice('לא נמצאו תמונות או סרטונים', 'בקבצים שנבחרו אין קבצי מדיה מוכרים. נסה לבחור תיקייה אחרת.', true); return; }
+    items.forEach(it => it.url && !it.sample && URL.revokeObjectURL(it.url));
+    items = list; history = [];
+    $('sampleChip').hidden = true;
+    rebuild(0);
+  }
+  $('openFiles').onclick = () => $('fileInput').click();
+  $('openFolder').onclick = () => $('folderInput').click();
+  $('fileInput').onchange = e => { setFiles([...e.target.files]); e.target.value = ''; };
+  $('folderInput').onchange = e => { setFiles([...e.target.files]); e.target.value = ''; };
+
+  // drag & drop, including whole folders
+  let dragDepth = 0;
+  window.addEventListener('dragenter', e => { if (e.dataTransfer?.types.includes('Files')) { dragDepth++; $('drop').hidden = false; e.preventDefault(); } });
+  window.addEventListener('dragleave', () => { if (--dragDepth <= 0) { dragDepth = 0; $('drop').hidden = true; } });
+  window.addEventListener('dragover', e => e.preventDefault());
+  window.addEventListener('drop', async e => {
+    e.preventDefault(); dragDepth = 0; $('drop').hidden = true;
+    const entries = [...(e.dataTransfer.items || [])].map(i => i.webkitGetAsEntry && i.webkitGetAsEntry()).filter(Boolean);
+    if (!entries.length) { setFiles([...e.dataTransfer.files]); return; }
+    const out = [];
+    const walk = async (entry, prefix) => {
+      if (entry.isFile) {
+        await new Promise(res => entry.file(f => { f._path = prefix + f.name; out.push(f); res(); }, res));
+      } else if (entry.isDirectory) {
+        const reader = entry.createReader();
+        let batch;
+        do {
+          batch = await new Promise(res => reader.readEntries(res, () => res([])));
+          for (const c of batch) await walk(c, prefix + entry.name + '/');
+        } while (batch.length);
+      }
+    };
+    for (const en of entries) await walk(en, '');
+    setFiles(out);
+  });
+
+  // ---------- list ----------
+  function rebuild(keepItem) {
+    const cur = typeof keepItem === 'number' ? null : view[pos];
+    view = items.map((_, i) => i).filter(i => settings.filter === 'all' || items[i].kind === settings.filter);
+    const by = settings.sort;
+    view.sort((a, b) => {
+      const A = items[a], B = items[b];
+      if (by === 'date') return (A.date || 0) - (B.date || 0) || collator.compare(A.path, B.path);
+      if (by === 'size') return (B.size || 0) - (A.size || 0);
+      return collator.compare(A.path, B.path);
+    });
+    renderList();
+    const keep = cur != null ? view.indexOf(cur) : -1;
+    if (view.length) show(keep >= 0 ? keep : 0, keep >= 0);
+    else { pos = -1; clearStage(); showNotice('אין קבצים להצגה', 'הסינון הנוכחי מסתיר את כל הקבצים. בחר "הכול" ברשימה.', false); }
+  }
+
+  const ICON_VIDEO = '<svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M10 9l5 3-5 3z"/></svg>';
+  const thumbObserver = new IntersectionObserver(entries => {
+    for (const en of entries) {
+      if (!en.isIntersecting) continue;
+      const li = en.target, it = items[+li.dataset.i];
+      thumbObserver.unobserve(li);
+      if (it.kind === 'image' && !['heic', 'heif', 'tif', 'tiff'].includes(ext(it.name))) {
+        const t = li.querySelector('.thumb');
+        const im = new Image(); im.decoding = 'async'; im.src = urlOf(it); im.alt = '';
+        im.onerror = () => { t.textContent = ext(it.name).toUpperCase(); };
+        t.textContent = ''; t.appendChild(im);
+      }
+    }
+  }, { root: $('items'), rootMargin: '200px' });
+
+  function renderList() {
+    const ol = $('items');
+    thumbObserver.disconnect();
+    ol.textContent = '';
+    const frag = document.createDocumentFragment();
+    view.forEach((i, p) => {
+      const it = items[i];
+      const li = document.createElement('li');
+      li.className = 'item' + (it.bad ? ' bad' : '');
+      li.dataset.i = i; li.dataset.p = p;
+      li.innerHTML = '<div class="thumb"></div><div class="meta"><div class="name"></div><div class="sub"></div></div>';
+      li.querySelector('.thumb').innerHTML = it.kind === 'video' ? ICON_VIDEO : ext(it.name).toUpperCase();
+      li.querySelector('.name').textContent = it.path;
+      li.querySelector('.name').title = it.path;
+      li.querySelector('.sub').textContent = it.bad ? 'לא ניתן להציג' : [it.kind === 'video' ? 'וידאו' : 'תמונה', fmtSize(it.size)].filter(Boolean).join(' · ');
+      li.onclick = () => show(p);
+      frag.appendChild(li);
+      thumbObserver.observe(li);
+    });
+    ol.appendChild(frag);
+    const nImg = view.filter(i => items[i].kind === 'image').length;
+    $('count').textContent = nImg + ' תמונות · ' + (view.length - nImg) + ' סרטונים';
+  }
+  function markActive() {
+    const ol = $('items');
+    ol.querySelector('.item.on')?.classList.remove('on');
+    const li = ol.children[pos];
+    if (li) { li.classList.add('on'); li.scrollIntoView({ block: 'nearest' }); }
+  }
+
+  function urlOf(it) { return it.url || (it.url = URL.createObjectURL(it.file)); }
+
+  // ---------- showing an item ----------
+  let token = 0;
+  async function show(p, keepZoom) {
+    if (!view.length) return;
+    p = Math.max(0, Math.min(view.length - 1, p));
+    if (pos !== p && pos >= 0) { history.push(view[pos]); if (history.length > 500) history.shift(); }
+    pos = p;
+    const it = items[view[p]], my = ++token;
+    stopSlide();
+    hideNotice();
+    if (!keepZoom) resetZoom();
+    markActive();
+    $('posChip').textContent = (p + 1) + ' / ' + view.length;
+    $('nameChip').textContent = it.name;
+    $('infoChip').textContent = fmtSize(it.size);
+
+    if (it.kind === 'video') {
+      img.hidden = true; img.removeAttribute('src');
+      vid.hidden = false; $('vc').hidden = false;
+      vid.src = urlOf(it);
+      vid.playbackRate = +$('speed').value;
+      const pr = vid.play();
+      if (pr) pr.catch(() => {});   // autoplay with sound may wait for a click
+    } else {
+      vid.pause(); vid.removeAttribute('src'); vid.load();
+      vid.hidden = true; $('vc').hidden = true;
+      let src = urlOf(it);
+      if (['heic', 'heif'].includes(ext(it.name)) && !it.converted) {
+        showNotice('ממיר תמונת HEIC…', 'רגע אחד.', false);
+        try {
+          await loadHeic();
+          const blob = await window.heic2any({ blob: it.file, toType: 'image/jpeg', quality: 0.92 });
+          URL.revokeObjectURL(it.url);
+          it.url = URL.createObjectURL(Array.isArray(blob) ? blob[0] : blob); it.converted = true; src = it.url;
+          if (my !== token) return;
+          hideNotice();
+        } catch (e) { if (my === token) failed(it, 'לא הצלחתי להמיר את תמונת ה-HEIC. כדי להמיר בפעם הראשונה צריך חיבור לאינטרנט.'); return; }
+      }
+      img.hidden = false;
+      img.src = src;
+    }
+  }
+  function clearStage() { img.hidden = true; vid.hidden = true; $('vc').hidden = true; vid.pause(); }
+
+  function loadHeic() {
+    if (window.heic2any) return Promise.resolve();
+    return new Promise((res, rej) => { const s = document.createElement('script'); s.src = HEIC_LIB; s.onload = res; s.onerror = rej; document.head.appendChild(s); });
+  }
+
+  function failed(it, why) {
+    it.bad = true;
+    const li = $('items').children[pos];
+    if (li) { li.classList.add('bad'); li.querySelector('.sub').textContent = 'לא ניתן להציג'; }
+    clearStage();
+    showNotice('הקובץ הזה לא נפתח', why + (settings.autoNext ? ' עובר לקובץ הבא…' : ''), false);
+    if (settings.autoNext && view.length > 1) { const my = token; setTimeout(() => { if (my === token) next(true); }, 1800); }
+  }
+  img.onload = () => {
+    $('infoChip').textContent = img.naturalWidth + '×' + img.naturalHeight + ' · ' + fmtSize(items[view[pos]]?.size);
+    if (settings.autoNext && !items[view[pos]]?.sample) startSlide();
+  };
+  img.onerror = () => { if (img.getAttribute('src')) { const it = items[view[pos]]; failed(it, 'הדפדפן לא יודע להציג תמונה בפורמט ' + ext(it.name).toUpperCase() + '.'); } };
+  vid.onerror = () => { if (vid.getAttribute('src')) { const it = items[view[pos]]; failed(it, 'הדפדפן לא יודע לנגן את הקובץ הזה (' + ext(it.name).toUpperCase() + '). קבצי AVI, WMV ו-FLV ישנים צריך להמיר ל-MP4, למשל עם HandBrake.'); } };
+  vid.onloadedmetadata = () => {
+    $('infoChip').textContent = vid.videoWidth + '×' + vid.videoHeight + ' · ' + fmtSize(items[view[pos]]?.size);
+    $('tDur').textContent = fmtTime(vid.duration);
+  };
+  vid.onended = () => { if (settings.autoNext) next(true); };
+
+  function next(auto) {
+    if (!view.length) return;
+    if (settings.shuffle && view.length > 1) {
+      let p; do { p = Math.floor(Math.random() * view.length); } while (p === pos);
+      return show(p);
+    }
+    if (pos < view.length - 1) return show(pos + 1);
+    if (settings.loop || !auto) return show(0);
+    stopSlide();   // reached the end
+  }
+  function prev() {
+    if (!view.length) return;
+    if (settings.shuffle && history.length) {
+      const i = history.pop(), p = view.indexOf(i);
+      if (p >= 0) { const h = history.slice(); show(p); history = h; return; }
+    }
+    show(pos > 0 ? pos - 1 : view.length - 1);
+  }
+
+  // ---------- image slideshow ----------
+  function startSlide() {
+    stopSlide();
+    if (items[view[pos]]?.kind !== 'image') return;
+    slidePaused = false; slideStart = performance.now();
+    const ms = Math.max(1, +settings.slideSec || 5) * 1000;
+    slideTimer = setTimeout(() => next(true), ms);
+    const tick = () => { $('slideBar').style.width = Math.min(100, (performance.now() - slideStart) / ms * 100) + '%'; slideRaf = requestAnimationFrame(tick); };
+    tick();
+  }
+  function stopSlide() { clearTimeout(slideTimer); slideTimer = null; cancelAnimationFrame(slideRaf); $('slideBar').style.width = '0'; }
+
+  // ---------- zoom & pan (same for images and video) ----------
+  const media = () => vid.hidden ? img : vid;
+  function apply() {
+    const el = media();
+    // keep the picture from leaving the screen
+    const W = stage.clientWidth, H = stage.clientHeight, w = el.offsetWidth * z.s, h = el.offsetHeight * z.s;
+    const mx = Math.max(0, (w - W) / 2), my = Math.max(0, (h - H) / 2);
+    z.x = Math.max(-mx, Math.min(mx, z.x)); z.y = Math.max(-my, Math.min(my, z.y));
+    const t = 'translate(' + z.x + 'px,' + z.y + 'px) scale(' + z.s + ')';
+    img.style.transform = t; vid.style.transform = t;
+    $('zLevel').textContent = Math.round(z.s * 100) + '%';
+    stage.classList.toggle('zoomed', z.s > 1.001);
+  }
+  function zoomAt(s2, cx, cy) {
+    s2 = Math.max(1, Math.min(40, s2));
+    const r = stage.getBoundingClientRect();
+    const qx = (cx ?? r.left + r.width / 2) - (r.left + r.width / 2);
+    const qy = (cy ?? r.top + r.height / 2) - (r.top + r.height / 2);
+    const k = s2 / z.s;
+    z.x = qx - (qx - z.x) * k; z.y = qy - (qy - z.y) * k; z.s = s2;
+    apply();
+  }
+  function resetZoom() { z.s = 1; z.x = 0; z.y = 0; apply(); }
+  function actualSize() {
+    const el = media();
+    const nw = el === img ? img.naturalWidth : vid.videoWidth;
+    if (!nw || !el.offsetWidth) return;
+    zoomAt(nw / el.offsetWidth);
+  }
+  $('zIn').onclick = () => zoomAt(z.s * 1.25);
+  $('zOut').onclick = () => zoomAt(z.s / 1.25);
+  $('zLevel').onclick = resetZoom;
+  $('z1').onclick = actualSize;
+  window.addEventListener('resize', apply);
+
+  stage.addEventListener('wheel', e => {
+    if (!view.length) return;
+    e.preventDefault();
+    zoomAt(z.s * Math.exp(-e.deltaY * (e.deltaMode === 1 ? 0.05 : 0.0015)), e.clientX, e.clientY);
+  }, { passive: false });
+
+  // mouse drag to pan, two-finger pinch on touch screens
+  const ptrs = new Map();
+  let drag = null, moved = 0, pinch = null;
+  stage.addEventListener('pointerdown', e => {
+    if (e.target.closest('.vc, .zoombox, .notice .card, .help')) return;
+    ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    stage.setPointerCapture(e.pointerId);
+    moved = 0;
+    if (ptrs.size === 2) {
+      const [a, b] = [...ptrs.values()];
+      pinch = { d: Math.hypot(a.x - b.x, a.y - b.y), s: z.s };
+      drag = null;
+    } else {
+      drag = { x: e.clientX, y: e.clientY, zx: z.x, zy: z.y };
+    }
+  });
+  stage.addEventListener('pointermove', e => {
+    if (!ptrs.has(e.pointerId)) return;
+    ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (pinch && ptrs.size === 2) {
+      const [a, b] = [...ptrs.values()];
+      zoomAt(pinch.s * Math.hypot(a.x - b.x, a.y - b.y) / pinch.d, (a.x + b.x) / 2, (a.y + b.y) / 2);
+      moved = 99; return;
+    }
+    if (!drag) return;
+    const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
+    moved = Math.max(moved, Math.abs(dx) + Math.abs(dy));
+    if (z.s > 1.001) { z.x = drag.zx + dx; z.y = drag.zy + dy; stage.classList.add('dragging'); apply(); }
+  });
+  const endPtr = e => {
+    ptrs.delete(e.pointerId);
+    if (ptrs.size < 2) pinch = null;
+    if (!ptrs.size) {
+      stage.classList.remove('dragging');
+      // a swipe at normal size moves between files (touch screens)
+      if (drag && z.s <= 1.001 && e.pointerType !== 'mouse') {
+        const dx = e.clientX - drag.x;
+        if (Math.abs(dx) > 60) { dx < 0 ? next() : prev(); moved = 99; }
+      }
+      drag = null;
+    }
+  };
+  stage.addEventListener('pointerup', endPtr);
+  stage.addEventListener('pointercancel', endPtr);
+
+  let clickTimer = null;
+  stage.addEventListener('click', e => {
+    if (moved > 4 || e.target.closest('.vc, .zoombox, .notice, .help')) return;
+    if (vid.hidden) return;
+    clearTimeout(clickTimer);
+    clickTimer = setTimeout(togglePlay, 220);   // wait to see if it's a double click
+  });
+  stage.addEventListener('dblclick', e => {
+    if (e.target.closest('.vc, .zoombox, .notice, .help')) return;
+    clearTimeout(clickTimer);
+    if (z.s > 1.001) resetZoom(); else zoomAt(2.5, e.clientX, e.clientY);
+  });
+
+  // ---------- video controls ----------
+  function togglePlay() {
+    if (vid.hidden) { slideTimer ? (stopSlide(), slidePaused = true) : startSlide(); return; }
+    vid.paused ? vid.play().catch(() => {}) : vid.pause();
+  }
+  const PLAY = '<path d="M7 5l12 7-12 7z"/>', PAUSE = '<path d="M8 5v14M16 5v14"/>';
+  vid.onplay = () => { $('playIcon').innerHTML = PAUSE; };
+  vid.onpause = () => { $('playIcon').innerHTML = PLAY; };
+  let seeking = false;
+  vid.ontimeupdate = () => {
+    $('tCur').textContent = fmtTime(vid.currentTime);
+    if (!seeking && vid.duration) $('seek').value = vid.currentTime / vid.duration * 1000;
+  };
+  $('seek').oninput = () => { seeking = true; if (vid.duration) { vid.currentTime = $('seek').value / 1000 * vid.duration; } };
+  $('seek').onchange = () => { seeking = false; };
+  $('vPlay').onclick = togglePlay;
+  $('vPrev').onclick = () => prev();
+  $('vNext').onclick = () => next();
+  const setVol = v => { settings.vol = Math.max(0, Math.min(1, v)); settings.muted = settings.vol === 0; vid.volume = settings.vol; vid.muted = settings.muted; $('vol').value = settings.vol; $('volWave').style.opacity = settings.muted ? 0.2 : 1; save(); };
+  $('vol').oninput = () => setVol(+$('vol').value);
+  $('vMute').onclick = () => { settings.muted = !settings.muted; vid.muted = settings.muted; if (!settings.muted && !settings.vol) settings.vol = 0.5, vid.volume = 0.5; $('vol').value = settings.muted ? 0 : settings.vol; $('volWave').style.opacity = settings.muted ? 0.2 : 1; save(); };
+  $('speed').onchange = () => { vid.playbackRate = +$('speed').value; };
+  const stepSpeed = d => { const s = $('speed'); s.selectedIndex = Math.max(0, Math.min(s.options.length - 1, s.selectedIndex + d)); vid.playbackRate = +s.value; };
+  const seekBy = d => { if (!vid.hidden && vid.duration) vid.currentTime = Math.max(0, Math.min(vid.duration, vid.currentTime + d)); };
+
+  // ---------- toolbar ----------
+  $('autoNext').onclick = () => { settings.autoNext = !settings.autoNext; syncToggles(); save(); settings.autoNext && img.complete && !img.hidden ? startSlide() : stopSlide(); };
+  $('shuffle').onclick = () => { settings.shuffle = !settings.shuffle; syncToggles(); save(); };
+  $('loop').onclick = () => { settings.loop = !settings.loop; syncToggles(); save(); };
+  $('listToggle').onclick = () => { settings.list = !settings.list; syncToggles(); save(); requestAnimationFrame(apply); };
+  $('slideSec').onchange = () => { settings.slideSec = Math.max(1, +$('slideSec').value || 5); save(); if (slideTimer) startSlide(); };
+  $('filter').onchange = () => { settings.filter = $('filter').value; save(); rebuild(); };
+  $('sort').onchange = () => { settings.sort = $('sort').value; save(); rebuild(); };
+  const toggleFull = () => {
+    if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+    else $('app').requestFullscreen?.().catch(() => {});
+  };
+  $('fullBtn').onclick = toggleFull;
+  $('helpBtn').onclick = () => { $('help').hidden = !$('help').hidden; };
+  $('helpClose').onclick = () => { $('help').hidden = true; };
+
+  // hide controls after a few idle seconds while something plays
+  let idleT;
+  const wake = () => { $('app').classList.remove('idle'); clearTimeout(idleT); idleT = setTimeout(() => { if (!vid.hidden && !vid.paused || document.fullscreenElement) $('app').classList.add('idle'); }, 2500); };
+  ['mousemove', 'pointerdown', 'keydown'].forEach(ev => window.addEventListener(ev, wake, true));
+
+  // ---------- notices ----------
+  function showNotice(title, text, withButtons) {
+    $('noticeTitle').textContent = title; $('noticeText').textContent = text;
+    const row = $('noticeRow'); row.textContent = '';
+    if (withButtons) {
+      const a = document.createElement('button'); a.className = 'btn primary'; a.textContent = 'פתיחת קבצים'; a.onclick = () => $('fileInput').click();
+      const b = document.createElement('button'); b.className = 'btn'; b.textContent = 'פתיחת תיקייה'; b.onclick = () => $('folderInput').click();
+      row.append(a, b);
+    }
+    $('notice').hidden = false;
+  }
+  function hideNotice() { $('notice').hidden = true; }
+
+  // ---------- keyboard (uses key positions, so it works with a Hebrew layout too) ----------
+  window.addEventListener('keydown', e => {
+    const t = e.target;
+    if (t.tagName === 'INPUT' && t.type === 'number' || t.tagName === 'SELECT' && !e.code.startsWith('Arrow')) return;
+    if (e.altKey || e.metaKey) return;
+    const c = e.code, k = e.key;
+    let done = true;
+    if (!$('help').hidden && (c === 'Escape' || k === '?')) $('help').hidden = true;
+    else if (k === '?' ) $('help').hidden = false;
+    else if (e.shiftKey && c.startsWith('Arrow')) {
+      const step = 80;
+      if (c === 'ArrowLeft') z.x += step; if (c === 'ArrowRight') z.x -= step;
+      if (c === 'ArrowUp') z.y += step; if (c === 'ArrowDown') z.y -= step;
+      apply();
+    }
+    else if (e.ctrlKey && c === 'ArrowRight') seekBy(5);
+    else if (e.ctrlKey && c === 'ArrowLeft') seekBy(-5);
+    else if (e.ctrlKey) done = false;
+    else if (c === 'ArrowRight' || c === 'PageDown') next();
+    else if (c === 'ArrowLeft' || c === 'PageUp') prev();
+    else if (c === 'Home') show(0);
+    else if (c === 'End') show(view.length - 1);
+    else if (c === 'Space' || c === 'KeyK') togglePlay();
+    else if (c === 'Equal' || c === 'NumpadAdd') zoomAt(z.s * 1.25);
+    else if (c === 'Minus' || c === 'NumpadSubtract') zoomAt(z.s / 1.25);
+    else if (c === 'Digit0' || c === 'Numpad0') resetZoom();
+    else if (c === 'Digit1' || c === 'Numpad1') actualSize();
+    else if (c === 'ArrowUp') setVol((settings.muted ? 0 : settings.vol) + 0.05);
+    else if (c === 'ArrowDown') setVol((settings.muted ? 0 : settings.vol) - 0.05);
+    else if (c === 'KeyJ') seekBy(-10);
+    else if (c === 'KeyL') seekBy(10);
+    else if (c === 'BracketLeft') stepSpeed(-1);
+    else if (c === 'BracketRight') stepSpeed(1);
+    else if (c === 'KeyM') $('vMute').click();
+    else if (c === 'KeyF') toggleFull();
+    else if (c === 'KeyP') $('listToggle').click();
+    else if (c === 'KeyA') $('autoNext').click();
+    else if (c === 'KeyS') $('shuffle').click();
+    else if (c === 'KeyR') $('loop').click();
+    else if (c === 'KeyO') $('fileInput').click();
+    else if (c === 'Escape') done = false;
+    else done = false;
+    if (done) e.preventDefault();
+  }, true);
+
+  // ---------- sample pictures so the viewer opens with something to try ----------
+  function samples() {
+    const scenes = [
+      { name: 'דוגמה-1-שונית.png', top: '#0b4f6c', bot: '#01212f', fish: '#f2b63d' },
+      { name: 'דוגמה-2-שקיעה.png', top: '#f08a4b', bot: '#3b1f4a', fish: '#ffe1a8' },
+      { name: 'דוגמה-3-יער.png', top: '#2f5d3a', bot: '#0f2414', fish: '#cde6b0' },
+    ];
+    return scenes.map((sc, n) => {
+      const cv = document.createElement('canvas'); cv.width = 1600; cv.height = 1000;
+      const g = cv.getContext('2d');
+      const gr = g.createLinearGradient(0, 0, 0, 1000); gr.addColorStop(0, sc.top); gr.addColorStop(1, sc.bot);
+      g.fillStyle = gr; g.fillRect(0, 0, 1600, 1000);
+      let seed = n * 97 + 13; const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+      for (let i = 0; i < 40; i++) {
+        const x = rnd() * 1600, y = rnd() * 1000, r = 8 + rnd() * 40;
+        g.fillStyle = sc.fish; g.globalAlpha = 0.25 + rnd() * 0.6;
+        g.beginPath(); g.ellipse(x, y, r * 1.6, r, 0, 0, Math.PI * 2); g.fill();
+        g.beginPath(); g.moveTo(x - r * 1.5, y); g.lineTo(x - r * 2.4, y - r * 0.8); g.lineTo(x - r * 2.4, y + r * 0.8); g.fill();
+      }
+      g.globalAlpha = 1; g.fillStyle = 'rgba(255,255,255,.9)'; g.font = '600 64px Assistant, Arial'; g.textAlign = 'center';
+      g.fillText('תמונת דוגמה ' + (n + 1), 800, 500);
+      g.font = '20px Consolas, monospace'; g.fillStyle = 'rgba(255,255,255,.55)';
+      g.fillText('הגדל עם גלגלת העכבר כדי לראות את הטקסט הקטן הזה', 800, 560);
+      return { name: sc.name, path: sc.name, kind: 'image', size: null, date: n, url: cv.toDataURL('image/png'), sample: true };
+    });
+  }
+
+  syncToggles();
+  $('volWave').style.opacity = settings.muted ? 0.2 : 1;
+  items = samples();
+  $('sampleChip').hidden = false;
+  rebuild(0);
+  // a mouse click on a button shouldn't leave focus there, or Space would press it again
+  document.addEventListener('pointerup', e => { const b = e.target.closest('button'); if (b) setTimeout(() => b.blur()); });
+})();
+</script>
+<!-- ARTIFACT-END -->
+</body>
+</html>
