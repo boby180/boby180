@@ -1,0 +1,26 @@
+name: Daily good news to Telegram
+
+on:
+  schedule:
+    # 08:00 Israel time: 05:00 UTC in summer (IDT), 06:00 UTC in winter (IST).
+    # The script sends only from the run that matches the current offset.
+    - cron: "0 5 * * *"
+    - cron: "0 6 * * *"
+  workflow_dispatch: {}
+
+jobs:
+  send:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Send good news
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          # Hour of the cron entry that triggered this run (empty for manual runs).
+          SCHEDULED_UTC_HOUR: ${{ github.event_name == 'schedule' && (github.event.schedule == '0 5 * * *' && '5' || '6') || '' }}
+          FORCE_SEND: ${{ github.event_name == 'workflow_dispatch' && '1' || '0' }}
+        run: python good_news_bot.py
