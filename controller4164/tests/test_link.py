@@ -131,14 +131,29 @@ def test_limit_switches_faults_and_abort_from_ip():
     assert wait_for(lambda: link.axes[1].fls)
     y, w = link.axes[1], link.axes[3]
     assert y.at_hw_max and not y.at_hw_min and w.at_hw_min
-    assert y.drv_fault and link.alarm and y.mf == 1
+    assert y.drv_fault and not link.alarm and y.mf == 1
+    assert link.status_bits()[3]
     assert link.inputs()[0] and not any(link.inputs()[1:])
-    assert "תקלת דרייבר" in link.why_cant_move()
+    assert "תקלת דרייבר" in link.why_cant_move(1)       # Y itself is blocked
+    link.set_axis_servo(2, True)
+    assert wait_for(lambda: link.axes[2].motor_on)
+    assert link.why_cant_move(2) is None                 # Z still moves despite the Y fault
+    assert link.move_to(2, 5.0)
     nt.ip = 1 << 28
     assert wait_for(lambda: link.abort_in)
     assert "ABORT" in link.why_cant_move()
     nt.ip = 0
     assert wait_for(lambda: not link.alarm)
+    link.close()
+
+
+def test_both_limit_switches_on_warns_once():
+    nt, link, logs = connected_link()
+    nt.ip = (1 << 16) | (1 << 17)                         # X RLS and FLS together
+    assert wait_for(lambda: link.axes[0].rls and link.axes[0].fls)
+    time.sleep(0.3)
+    warnings = [t for k, t in logs if "שני מתגי הגבול" in t]
+    assert len(warnings) == 1
     link.close()
 
 

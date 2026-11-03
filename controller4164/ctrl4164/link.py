@@ -181,24 +181,39 @@ class LinkController(BaseController):
         self.in_bits = [bool(ip >> b & 1) for b in range(N_BITS)]
         for i, a in enumerate(self.axes):
             rls, fls = bool(ip >> (16 + 2 * i) & 1), bool(ip >> (17 + 2 * i) & 1)
-            if (rls and not a.rls) or (fls and not a.fls):
+            if rls and fls:
+                if not (a.rls and a.fls):
+                    self.log("err", f"{a.name}: שני מתגי הגבול (LIM− ו-LIM+) פעילים יחד. כנראה המתגים לא "
+                                    "מחוברים או שהלוגיקה שלהם הפוכה (IL בבקר).")
+            elif (rls and not a.rls) or (fls and not a.fls):
                 self.log("err", f"{a.name}: מתג גבול {'RLS (LIM−)' if rls else 'FLS (LIM+)'} פעיל")
             a.rls, a.fls = rls, fls
             a.hw_hit = rls or fls
-            a.drv_fault = bool(ip >> (24 + i) & 1)
+            drv = bool(ip >> (24 + i) & 1)
+            if drv and not a.drv_fault:
+                self.log("err", f"{a.name}: תקלת דרייבר. רק הציר הזה חסום, שאר הצירים יכולים לזוז.")
+            a.drv_fault = drv
         abort = bool(ip >> 28 & 1)
         if abort and not self.abort_in:
             self.log("err", "כניסת ABORT פעילה: הבקר מכבה את כל הצירים")
         self.abort_in = abort
-        self.alarm = abort or any(a.drv_fault for a in self.axes)
+        # ABORT stops every axis; a driver fault only disables its own axis (Users Manual: IP, MF).
+        self.alarm = abort
 
     # ---- commands ----
     def why_cant_move(self, i: int | None = None) -> str | None:
-        if self.connected and self.alarm:
-            faults = [a.name for a in self.axes if a.drv_fault]
-            return (("כניסת ABORT פעילה." if self.abort_in else "") +
-                    (f" תקלת דרייבר ב-{', '.join(faults)}." if faults else "")).strip()
+        if self.connected and self.abort_in:
+            return "כניסת ABORT פעילה. כל הצירים חסומים עד שהיא משתחררת."
+        if self.connected:
+            faults = [a.name for a in (self.axes if i is None else [self.axes[i]]) if a.drv_fault]
+            if faults:
+                return f"תקלת דרייבר ב-{', '.join(faults)}. בדוק את הדרייבר של הציר (MF בבקר)."
         return super().why_cant_move(i)
+
+    def status_bits(self) -> list[bool]:
+        bits = super().status_bits()
+        bits[3] = self.abort_in or any(a.drv_fault for a in self.axes)  # "תקלה" also shows driver faults
+        return bits
 
     def set_servo(self, on: bool) -> bool:
         if not self.connected:
