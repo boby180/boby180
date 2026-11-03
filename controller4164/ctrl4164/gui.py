@@ -5,11 +5,12 @@ from __future__ import annotations
 import queue
 import sys
 import time
+from pathlib import Path
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import QSettings, Qt, QTimer
 from PySide6.QtGui import QColor, QFont, QPainter, QPalette
 from PySide6.QtWidgets import (
-    QApplication, QCheckBox, QComboBox, QDoubleSpinBox, QFrame, QGridLayout, QGroupBox, QHBoxLayout,
+    QApplication, QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QFrame, QGridLayout, QGroupBox, QHBoxLayout,
     QHeaderView, QLabel, QLineEdit, QMainWindow, QMessageBox, QPlainTextEdit, QPushButton, QScrollArea, QSizePolicy, QSlider,
     QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
@@ -248,7 +249,10 @@ class MainWindow(QMainWindow):
         self.setLayoutDirection(Qt.RightToLeft)
         self._log_q: queue.Queue = queue.Queue()
         self.ctrl = SimController(log=self.log)
-        self.settings_path = app_dir() / SETTINGS_FILE
+        # The last settings file the operator saved or loaded (one file per controller), else the default.
+        self.prefs = QSettings("ctrl4164", "Controller4164")
+        last = self.prefs.value("last_settings_file", "")
+        self.settings_path = Path(last) if last and Path(last).exists() else app_dir() / SETTINGS_FILE
 
         root = QWidget()
         scroll = QScrollArea()  # small screens: scroll instead of cutting off the limits table
@@ -267,9 +271,9 @@ class MainWindow(QMainWindow):
         body.addWidget(self._axes_area(), 3)
         body.addWidget(self._side_panel(), 2)
 
-        self.statusBar().showMessage(f"גרסה {__version__}")
         if self._load_settings():
             self.log("rx", f"הגדרות נטענו מ-{self.settings_path}")
+        self._show_settings_file()
         self._fill_limits_table()
 
         self._last = time.monotonic()
@@ -400,9 +404,11 @@ class MainWindow(QMainWindow):
         self.write_lim.clicked.connect(lambda: self.ctrl.write_limits())
         head.addWidget(self.read_lim)
         head.addWidget(self.write_lim)
-        save = QPushButton("שמור הגדרות")
+        save = QPushButton("שמור הגדרות לקובץ...")
+        save.setToolTip("שומר את הטבלה, ה-IP והפורט ומצב ה-Home לקובץ שתבחר. אפשר קובץ נפרד לכל בקר.")
         save.clicked.connect(self._save_settings)
-        load = QPushButton("טען הגדרות")
+        load = QPushButton("טען הגדרות מקובץ...")
+        load.setToolTip("טוען קובץ הגדרות שנשמר קודם. הקובץ האחרון נטען אוטומטית בפתיחה.")
         load.clicked.connect(self._reload_settings)
         self.sv_btn = QPushButton("כבה מנועים ושמור בבקר")
         self.sv_btn.setToolTip("מכבה את המנועים בכל הצירים (MO=0) ושומר את הפרמטרים בפלאש של הבקר (XSV,1),\n"
@@ -616,19 +622,44 @@ class MainWindow(QMainWindow):
         self._home_mode_changed()
         return ok
 
+    def _show_settings_file(self) -> None:
+        self.statusBar().showMessage(f"גרסה {__version__}    ·    קובץ הגדרות: {self.settings_path.name}")
+        self.setWindowTitle(f"בקר 4164  ·  {self.settings_path.stem}  ·  גרסה {__version__}")
+
+    def _remember_settings_file(self, path: Path) -> None:
+        self.settings_path = path
+        self.prefs.setValue("last_settings_file", str(path))
+        self._show_settings_file()
+
     def _reload_settings(self) -> None:
+        name, _ = QFileDialog.getOpenFileName(self, "טעינת הגדרות", str(self.settings_path.parent),
+                                              "קובצי הגדרות (*.json);;כל הקבצים (*)")
+        if not name:
+            return
+        old = self.settings_path
+        self.settings_path = Path(name)
         if self._load_settings():
             self._fill_limits_table()
+            self._remember_settings_file(Path(name))
             self.log("rx", f"הגדרות נטענו מ-{self.settings_path}")
         else:
-            self.log("err", f"אין קובץ הגדרות ב-{self.settings_path}")
+            self.settings_path = old
+            self.log("err", f"לא נטענו הגדרות מ-{name}")
 
     def _save_settings(self) -> None:
+        name, _ = QFileDialog.getSaveFileName(self, "שמירת הגדרות", str(self.settings_path),
+                                              "קובצי הגדרות (*.json)")
+        if not name:
+            return
+        path = Path(name)
+        if path.suffix.lower() != ".json":
+            path = path.with_name(path.name + ".json")
         try:
             app = {"ip": self.ip.text().strip(), "lan_port": self.lan_port.currentText(),
                    "connection": self.port.currentText(), "home_label": self.home_label.text().strip(),
                    "home_mode": "macro" if self.home_mode.currentIndex() == 1 else "position"}
-            save_settings(self.settings_path, self.ctrl.axes, app)
+            save_settings(path, self.ctrl.axes, app)
+            self._remember_settings_file(path)
             self.log("rx", f"הגדרות נשמרו ב-{self.settings_path}")
         except OSError as e:
             self.log("err", f"השמירה נכשלה: {e}")
