@@ -82,3 +82,33 @@ def test_force_send(monkeypatch):
     monkeypatch.setenv("SCHEDULED_UTC_HOUR", "")
     bot.main()
     assert len(sent) == 1
+
+
+def test_ready_made_message_skips_feeds(monkeypatch):
+    sent = []
+    monkeypatch.setattr(bot, "send_telegram", lambda t, c, text: sent.append(text))
+    monkeypatch.setattr(bot, "collect_news", lambda n: 1 / 0)
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "t")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "c")
+    monkeypatch.setenv("MESSAGE", "<b>שלום</b>")
+    bot.main()
+    assert sent == ["<b>שלום</b>"]
+
+
+def test_split_message_respects_limit():
+    text = "\n\n".join(["א" * 1500] * 5)
+    chunks = bot.split_message(text)
+    assert all(len(c) <= bot.TELEGRAM_LIMIT for c in chunks)
+    assert "".join(chunks).replace("\n", "") == text.replace("\n", "")
+
+
+def test_send_falls_back_to_plain_text(monkeypatch):
+    calls = []
+
+    def fake_post(token, params):
+        calls.append(dict(params))
+        return {"ok": "parse_mode" not in params, "description": "bad html"}
+
+    monkeypatch.setattr(bot, "_post", fake_post)
+    bot.send_telegram("t", "c", "<b>broken")
+    assert len(calls) == 2 and "parse_mode" not in calls[1]
