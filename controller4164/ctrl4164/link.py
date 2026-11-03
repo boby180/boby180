@@ -29,6 +29,7 @@ from .model import (
 from .protocol import ProtocolError, Reply, check_clauses
 
 POLL_INTERVAL = 0.1
+STOP_REPORT_DELAY = 0.5  # the axis settles after MS goes to 0; report the stop position this much later
 
 
 class LinkController(BaseController):
@@ -40,6 +41,7 @@ class LinkController(BaseController):
         self.port = transport.describe()
         self.in_bits = [False] * N_BITS
         self.abort_in = False
+        self._stop_report_at: dict[int, float] = {}  # axis index -> time to log its stop position
         self.limits_read = False  # set by read_limits() / read_axis_params(); the GUI refreshes its table
         self._q: queue.Queue = queue.Queue()
         self._stop = threading.Event()
@@ -163,9 +165,15 @@ class LinkController(BaseController):
                 if ms == 0 and was_moving:
                     a.target = None
                     a.vel = 0.0
-                    self.log("rx", f"{a.name} נעצר ב-{a.pos:.3f}° ({a.bits()} bits)")
-                    if a.at_home:
-                        a.homed = True
+                    self._stop_report_at[i] = now + STOP_REPORT_DELAY
+                elif ms != 0:
+                    self._stop_report_at.pop(i, None)  # moving again: no stale report
+            due = self._stop_report_at.get(i)
+            if due is not None and now >= due:
+                del self._stop_report_at[i]
+                self.log("rx", f"{a.name} נעצר ב-{a.pos:.3f}° ({a.bits()} bits)")
+                if a.at_home:
+                    a.homed = True
             if ms == 0 and a.target is not None and abs(a.bits() - a.bits(a.target)) <= 1:
                 a.target = None  # short move finished between two polls
             a.sr = r2[i].value

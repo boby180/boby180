@@ -243,3 +243,19 @@ def test_moves_send_ac_from_pa62():
     i = nt.received.index("XAP=12000")
     assert "XAC=36000" in nt.received[i - 3:i] and "XSP=7200" in nt.received[i - 3:i]
     link.close()
+
+
+def test_stop_position_is_reported_after_settling():
+    nt, link, logs = connected_link()
+    nt.p["X"]["MS"] = 1
+    assert wait_for(lambda: link.axes[0].moving)
+    nt.p["X"]["MS"] = 0
+    nt.p["X"]["PS"] = 10000                 # where the axis was when MS dropped to 0
+    assert wait_for(lambda: not link.axes[0].moving)
+    nt.p["X"]["PS"] = 10500                 # it settles a bit further within the delay
+    time.sleep(0.2)
+    assert not any("נעצר" in t for _, t in logs)
+    assert wait_for(lambda: any("נעצר" in t for _, t in logs), timeout=2)
+    msg = [t for _, t in logs if "נעצר" in t][0]
+    assert "+10.500" in msg or "10.500" in msg
+    link.close()
