@@ -13,6 +13,8 @@ Optional:
   SEND_HOUR           - local hour to send at (default 8)
   TIMEZONE            - IANA timezone for SEND_HOUR (default Asia/Jerusalem)
   FORCE_SEND=1        - skip the local-hour check (manual runs)
+  MESSAGE             - send this ready-made text (HTML) instead of
+                        collecting headlines
 """
 
 import html
@@ -20,6 +22,7 @@ import json
 import os
 import re
 import sys
+import urllib.error
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
@@ -123,18 +126,52 @@ def build_message(items, today):
     return "\n".join(lines)
 
 
-def send_telegram(token, chat_id, text):
+TELEGRAM_LIMIT = 4096
+
+
+def split_message(text, limit=TELEGRAM_LIMIT):
+    """Split text into chunks Telegram accepts, preferring paragraph breaks."""
+    chunks = []
+    while len(text) > limit:
+        cut = text.rfind("\n\n", 0, limit)
+        if cut <= 0:
+            cut = text.rfind("\n", 0, limit)
+        if cut <= 0:
+            cut = limit
+        chunks.append(text[:cut].rstrip())
+        text = text[cut:].lstrip("\n")
+    if text.strip():
+        chunks.append(text)
+    return chunks
+
+
+def _post(token, params):
     url = f"https://api.telegram.org/bot{token}/sendMessage"
-    payload = urllib.parse.urlencode({
-        "chat_id": chat_id,
-        "text": text,
-        "parse_mode": "HTML",
-        "disable_web_page_preview": "true",
-    }).encode()
-    with urllib.request.urlopen(url, data=payload, timeout=30) as resp:
-        result = json.load(resp)
-    if not result.get("ok"):
-        raise RuntimeError(f"Telegram error: {result}")
+    data = urllib.parse.urlencode(params).encode()
+    try:
+        with urllib.request.urlopen(url, data=data, timeout=30) as resp:
+            return json.load(resp)
+    except urllib.error.HTTPError as exc:
+        return json.load(exc)
+
+
+def send_telegram(token, chat_id, text):
+    for chunk in split_message(text):
+        params = {
+            "chat_id": chat_id,
+            "text": chunk,
+            "parse_mode": "HTML",
+            "disable_web_page_preview": "true",
+        }
+        result = _post(token, params)
+        if not result.get("ok"):
+            # Malformed HTML is rejected; send the chunk as plain text instead.
+            print(f"HTML send failed ({result.get('description')}); "
+                  "retrying as plain text", file=sys.stderr)
+            del params["parse_mode"]
+            result = _post(token, params)
+        if not result.get("ok"):
+            raise RuntimeError(f"Telegram error: {result}")
 
 
 def main():
@@ -142,6 +179,12 @@ def main():
     chat_id = os.environ.get("TELEGRAM_CHAT_ID")
     if not token or not chat_id:
         sys.exit("TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID must be set")
+
+    message = os.environ.get("MESSAGE", "").strip()
+    if message:
+        send_telegram(token, chat_id, message)
+        print("Sent ready-made message.")
+        return
 
     tz = ZoneInfo(os.environ.get("TIMEZONE", "Asia/Jerusalem"))
     now = datetime.now(tz)

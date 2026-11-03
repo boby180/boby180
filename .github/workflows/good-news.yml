@@ -1,12 +1,16 @@
 name: Daily good news to Telegram
 
+# Started every morning at 08:00 Israel time by a Claude routine, which writes
+# a Hebrew summary and passes it in as `message`. GitHub's own cron ran hours
+# late, so there is no schedule here. Leave `message` empty to send the latest
+# English headlines instead.
 on:
-  schedule:
-    # 08:00 Israel time: 05:00 UTC in summer (IDT), 06:00 UTC in winter (IST).
-    # The script sends only from the run that matches the current offset.
-    - cron: "0 5 * * *"
-    - cron: "0 6 * * *"
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      message:
+        description: "Ready-made message (Telegram HTML). Empty = latest headlines."
+        required: false
+        default: ""
 
 jobs:
   send:
@@ -20,7 +24,6 @@ jobs:
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          # Hour of the cron entry that triggered this run (empty for manual runs).
-          SCHEDULED_UTC_HOUR: ${{ github.event_name == 'schedule' && (github.event.schedule == '0 5 * * *' && '5' || '6') || '' }}
-          FORCE_SEND: ${{ github.event_name == 'workflow_dispatch' && '1' || '0' }}
+          MESSAGE: ${{ inputs.message }}
+          FORCE_SEND: "1"
         run: python good_news_bot.py
