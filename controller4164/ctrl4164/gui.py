@@ -27,6 +27,13 @@ SIM_PORT = "סימולציה"
 LAN_PORT = "Ethernet (LAN)"
 DEFAULT_IP = "10.0.0.105"
 SIM_NOTE = "מצב סימולציה: הפקודות לא נשלחות לבקר. לחיבור אמיתי בחר Ethernet או פורט COM ולחץ התחבר."
+# Connection banner: (text, background, text colour). The numbers on screen are real only in "link".
+BANNER = {
+    "link": ("●  מחובר לבקר  ·  {port}  ·  {fw}", "#1f9d55", "#ffffff"),
+    "connecting": ("◌  מתחבר לבקר  ·  {port} ...", "#e08a00", "#1c1400"),
+    "down": ("✖  לא מחובר לבקר: החיבור נכשל או נותק. המספרים במסך לא מעודכנים. לחץ \"התחבר\".", "#d62f2f", "#ffffff"),
+    "sim": ("✖  לא מחובר לבקר  ·  מצב סימולציה: המספרים במסך לא מהבקר. לחץ \"התחבר\".", "#d62f2f", "#ffffff"),
+}
 LINK_NOTE = ("מחובר לבקר SC-NT-4M. הפקודות זזות באמת. עצירת החירום בתוכנה שולחת AB ו-MO=0, "
              "והיא לא מחליפה את לחצן החירום של המכונה.")
 TICK_MS = 20
@@ -116,7 +123,7 @@ class AxisPanel(QGroupBox):
         self.readout.setFont(mono(24, bold=True))
         self.readout.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         self.readout.setLayoutDirection(Qt.LeftToRight)
-        self.readout.setStyleSheet("background:#eef1f4; color:#111820; border:1px solid #c9d1da; border-radius:6px; padding:4px 10px;")
+        self.set_live(False)
         top = QHBoxLayout()
         self.servo_btn = QPushButton()
         self.servo_btn.setMinimumWidth(110)
@@ -188,6 +195,14 @@ class AxisPanel(QGroupBox):
 
         btn.pressed.connect(pressed)
         btn.released.connect(lambda: self.win.ctrl.jog_stop(self.i))
+
+    def set_live(self, live: bool) -> None:
+        """Dark digits when the angle comes from the controller, grey and dashed when it does not."""
+        self.readout.setStyleSheet(
+            "background:#eef1f4; color:#111820; border:2px solid #1f9d55; border-radius:6px; padding:4px 10px;"
+            if live else
+            "background:#eef1f4; color:#9aa5b1; border:2px dashed #d62f2f; border-radius:6px; padding:4px 10px;")
+        self.readout.setToolTip("" if live else "לא מחובר לבקר: הזווית לא מהבקר")
 
     def refresh(self) -> None:
         a = self.axis
@@ -262,9 +277,14 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(scroll)
         outer = QVBoxLayout(root)
         outer.addWidget(self._top_bar())
+        self.banner = QLabel()
+        self.banner.setWordWrap(True)
+        self.banner.setFont(QFont(self.font().family(), 13, QFont.Bold))
+        outer.addWidget(self.banner)
         self.note = QLabel(SIM_NOTE)
         self.note.setWordWrap(True)
         outer.addWidget(self.note)
+        self._conn_state = None
 
         body = QHBoxLayout()
         outer.addLayout(body, 1)
@@ -624,7 +644,8 @@ class MainWindow(QMainWindow):
 
     def _show_settings_file(self) -> None:
         self.statusBar().showMessage(f"גרסה {__version__}    ·    קובץ הגדרות: {self.settings_path.name}")
-        self.setWindowTitle(f"בקר 4164  ·  {self.settings_path.stem}  ·  גרסה {__version__}")
+        status = "מחובר" if getattr(self, "_conn_state", None) == "link" else "לא מחובר"
+        self.setWindowTitle(f"[{status}]  בקר 4164  ·  {self.settings_path.stem}  ·  גרסה {__version__}")
 
     def _remember_settings_file(self, path: Path) -> None:
         self.settings_path = path
@@ -707,12 +728,21 @@ class MainWindow(QMainWindow):
         self.conn_btn.setText("התנתק" if c.connected else "מתחבר..." if connecting else "התחבר")
         self.conn_led.set("on" if c.connected else "warn" if connecting else "off")
         real = not c.simulated
-        self.note.setText(LINK_NOTE if real and c.connected else SIM_NOTE if c.simulated else
-                          "לא מחובר לבקר.")
-        self.note.setStyleSheet(
-            "background:#fff4e0; border:1px solid #e08a00; border-radius:6px; padding:6px; color:#5a3b00;"
-            if real and c.connected else
-            "background:#eef1f4; border:1px dashed #c9d1da; border-radius:6px; padding:6px; color:#5d6b7a;")
+        state = "link" if real and c.connected else "connecting" if connecting else "down" if real else "sim"
+        if state != self._conn_state:
+            self._conn_state = state
+            text, bg, fg = BANNER[state]
+            self.banner.setText(text.format(port=getattr(c, "port", ""), fw=c.firmware or "SC-NT-4M"))
+            self.banner.setStyleSheet(f"background:{bg}; color:{fg}; border-radius:6px; padding:8px 12px;")
+            self.note.setVisible(state == "link")
+            self.note.setText(LINK_NOTE)
+            self.note.setStyleSheet("background:#fff4e0; border:1px solid #e08a00; border-radius:6px; "
+                                    "padding:4px 8px; color:#5a3b00;")
+            for p in self.panels:
+                p.set_live(state == "link")
+            self._show_settings_file()
+        elif state == "link" and c.firmware and c.firmware not in self.banner.text():
+            self.banner.setText(BANNER["link"][0].format(port=c.port, fw=c.firmware))
         self.fw_lbl.setText(c.firmware if real and c.connected else "")
         self.sv_btn.setEnabled(real and c.connected)
         self.read_lim.setEnabled(real and c.connected)
