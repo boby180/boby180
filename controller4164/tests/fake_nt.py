@@ -15,7 +15,8 @@ class FakeNT:
                       "EM": 0, "MF": 0, "PE": 0, "LL": -200000, "HL": 200000} for L in "XYZW"}
         self.ip, self.op = 0b101, 0b10
         self.qf = {1: 0, 3: 0}
-        self.pa = {L: {43: 1000, 52: 6000, 62: 0} for L in "XYZW"}   # 1000 bits/deg, 6 deg/s, AC untouched
+        # PA[43] = bits/deg x 10000: 1000 bits/deg, 6 deg/s, AC untouched
+        self.pa = {L: {43: 10000000, 52: 6000, 62: 0} for L in "XYZW"}
         self.received: list[str] = []
         self.srv = socket.socket()
         self.srv.bind(("127.0.0.1", 0))

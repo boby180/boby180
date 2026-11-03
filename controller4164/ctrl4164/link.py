@@ -23,7 +23,8 @@ import time
 from typing import Callable
 
 from .model import (
-    MOTOR_FAULTS, N_BITS, N_OUTPUTS, PA_ACCEL, PA_BITS_PER_DEG, PA_MAX_SPEED, Axis, BaseController, LogFn,
+    MOTOR_FAULTS, N_BITS, N_OUTPUTS, PA_ACCEL, PA_BITS_PER_DEG, PA_BITS_PER_DEG_SCALE, PA_MAX_SPEED, Axis,
+    BaseController, LogFn,
 )
 from .protocol import ProtocolError, Reply, check_clauses
 
@@ -366,20 +367,22 @@ class LinkController(BaseController):
         return [f"{a.letter}PA[{n}]" for a in self.axes for n in (PA_BITS_PER_DEG, PA_MAX_SPEED, PA_ACCEL)]
 
     def _apply_axis_params(self, replies: list[Reply]) -> None:
-        """PA[43] bits/deg, PA[52] max speed [bits/s], PA[62] acceleration [bits/s^2] of each axis."""
+        """PA[43] bits/deg x 10000, PA[52] max speed [bits/s], PA[62] acceleration [bits/s^2] of each axis."""
         for j, a in enumerate(self.axes):
-            bpd, vmax, acc = (replies[3 * j + k].value for k in range(3))
-            if not bpd or bpd <= 0:
-                self.log("err", f"{a.name}: {a.letter}PA[{PA_BITS_PER_DEG}] (קבוע) לא תקין ({bpd}). "
+            raw_bpd, vmax, acc = (replies[3 * j + k].value for k in range(3))
+            if not raw_bpd or raw_bpd <= 0:
+                self.log("err", f"{a.name}: {a.letter}PA[{PA_BITS_PER_DEG}] (קבוע) לא תקין ({raw_bpd}). "
                                 "הערכים של הציר לא עודכנו.")
                 continue
-            a.cfg.bits_per_deg = float(bpd)
-            if vmax and vmax > 0:
-                a.cfg.vmax = vmax / bpd
-            if acc and acc > 0:
-                a.cfg.accel = acc / bpd
-            self.log("rx", f"{a.name}: קבוע {bpd} ביט/°, מהירות מקס' {a.cfg.vmax:g} °/ש' ({vmax} ביט/ש'), "
-                           f"תאוצה {a.cfg.accel:g} °/ש² ({acc} ביט/ש²)")
+            bpd = raw_bpd / PA_BITS_PER_DEG_SCALE
+            a.cfg.bits_per_deg = bpd
+            if vmax:
+                a.cfg.vmax = abs(vmax) / bpd
+            if acc:
+                a.cfg.accel = abs(acc) / bpd
+            self.log("rx", f"{a.name}: קבוע {bpd:.4f} ביט/° (PA[43]={raw_bpd}), "
+                           f"מהירות מקס' {a.cfg.vmax:.3f} °/ש' (PA[52]={vmax}), "
+                           f"תאוצה {a.cfg.accel:.3f} °/ש² (PA[62]={acc})")
         self.limits_read = True
 
     def read_axis_params(self) -> None:

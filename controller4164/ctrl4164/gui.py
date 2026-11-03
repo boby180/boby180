@@ -37,6 +37,11 @@ LED_COLORS = {"off": "#c3cbd3", "on": "#1f9d55", "bad": "#d62f2f", "warn": "#d99
 LOG_COLORS = {"tx": "#b86e00", "rx": "#1f8a4c", "err": "#c62f2f"}
 
 
+def fmt_num(v: float) -> str:
+    """Up to 4 decimals, no trailing zeros: 4551.1111, 800, 2.1972."""
+    return f"{v:.4f}".rstrip("0").rstrip(".")
+
+
 def mono(size: int, bold: bool = False) -> QFont:
     f = QFont(MONO)
     f.setPointSize(size)
@@ -188,7 +193,7 @@ class AxisPanel(QGroupBox):
         self.readout.setText(f"{a.pos:+.3f}°")
         target = f"{a.target:+.3f}°" if a.target is not None else "—"
         self.sub1.setText(f"יעד: {target}    מהירות: {a.vel:+.1f} °/ש'")
-        self.sub2.setText(f"ביטים: {a.bits():,}    קבוע: {a.cfg.bits_per_deg:g} ביט/°")
+        self.sub2.setText(f"ביטים: {a.bits():,}    קבוע: {fmt_num(a.cfg.bits_per_deg)} ביט/°")
         self.range_lbl.setText(f"{LRM}{a.cfg.min:g}°  …  {a.cfg.max:g}°")
         on = a.motor_on
         if on != getattr(self, "_servo_shown", None):
@@ -571,7 +576,7 @@ class MainWindow(QMainWindow):
         self.table.blockSignals(True)
         for r, a in enumerate(self.ctrl.axes):
             for c, (key, _) in enumerate(self.LIMIT_COLS):
-                item = QTableWidgetItem(LRM + f"{getattr(a.cfg, key):g}")  # LRM keeps "-200" from showing as "200-"
+                item = QTableWidgetItem(LRM + fmt_num(getattr(a.cfg, key)))  # LRM keeps "-200" from showing as "200-"
                 item.setTextAlignment(Qt.AlignCenter)
                 self.table.setItem(r, c, item)
         self.table.blockSignals(False)

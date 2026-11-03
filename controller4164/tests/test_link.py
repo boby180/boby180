@@ -216,24 +216,26 @@ def test_save_flash_refused_while_moving():
 
 
 def test_axis_params_read_from_pa_on_connect():
-    nt, link, logs = connected_link({43: 1200, 52: 7200, 62: 36000})
+    # Values read from the real controller: PA[43] has 4 decimals, PA[52] is stored negative.
+    nt, link, logs = connected_link({43: 45511111, 52: -40959, 62: 10000})
     x = link.axes[0]
-    assert x.cfg.bits_per_deg == 1200 and x.cfg.vmax == 6 and x.cfg.accel == 30   # 7200/1200, 36000/1200
-    nt.pa["Z"] = {43: 2000, 52: 20000, 62: 0}
+    assert x.cfg.bits_per_deg == 4551.1111
+    assert abs(x.cfg.vmax - 9.0) < 1e-3 and abs(x.cfg.accel - 2.1973) < 1e-3
+    nt.pa["Z"] = {43: 8000000, 52: -12480, 62: 8000}
     link.read_axis_params()
     z = link.axes[2]
-    assert wait_for(lambda: z.cfg.bits_per_deg == 2000)
-    assert z.cfg.vmax == 10 and z.cfg.accel == 30   # PA[62]=0 keeps the previous acceleration
+    assert wait_for(lambda: z.cfg.bits_per_deg == 800)
+    assert z.cfg.vmax == 15.6 and z.cfg.accel == 10
     nt.pa["W"] = {43: 0, 52: 1, 62: 1}
     link.limits_read = False
     link.read_axis_params()
     assert wait_for(lambda: any("PA[43]" in t and "לא תקין" in t for _, t in logs))
-    assert link.axes[3].cfg.bits_per_deg == 1200
+    assert link.axes[3].cfg.bits_per_deg == 4551.1111
     link.close()
 
 
 def test_moves_send_ac_from_pa62():
-    nt, link, _ = connected_link({43: 1200, 52: 7200, 62: 36000})
+    nt, link, _ = connected_link({43: 12000000, 52: -7200, 62: 36000})
     link.set_axis_servo(0, True)
     assert wait_for(lambda: link.axes[0].motor_on)
     link.move_to(0, 10.0)

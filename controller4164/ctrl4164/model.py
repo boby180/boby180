@@ -45,8 +45,9 @@ MOTOR_FAULTS = {0: "", 1: "תקלת דרייבר", 2: "כניסת ABORT", 3: "ש
                 4: "מנוע תקוע", 0x40: "שגיאת אנקודר", 0x80: "אנקודר מנותק"}
 SR_IN_TARGET = 0x20
 # Machine parameters kept by the controller's macro program in the PA array (per axis):
-PA_BITS_PER_DEG = 43   # encoder bits per degree
-PA_MAX_SPEED = 52      # max speed [bits/s]
+PA_BITS_PER_DEG = 43   # encoder bits per degree x 10000 (4 decimal places: 45511111 = 4551.1111)
+PA_BITS_PER_DEG_SCALE = 10000
+PA_MAX_SPEED = 52      # max speed [bits/s]; stored negative on some axes, the magnitude is used
 PA_ACCEL = 62          # acceleration [bits/s^2]
 DEFAULT_HOME_MACRO = "#HOME_{L}"   # SC-AT Macro Language manual example: XQE,#HOME_X
 
