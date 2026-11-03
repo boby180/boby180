@@ -235,7 +235,7 @@ class AxisPanel(QGroupBox):
 
 class MainWindow(QMainWindow):
     LIMIT_COLS = [("min", "מינימום (°)"), ("max", "מקסימום (°)"), ("vmax", "מהירות מקס' (°/ש')"),
-                  ("home", "מיקום Home (°)"), ("bits_per_deg", "קבוע: ביטים למעלה")]
+                  ("accel", "תאוצה (°/ש²)"), ("home", "מיקום Home (°)"), ("bits_per_deg", "קבוע: ביטים למעלה")]
 
     def __init__(self):
         super().__init__()
@@ -382,6 +382,11 @@ class MainWindow(QMainWindow):
         head = QHBoxLayout()
         head.addWidget(QLabel("<b>לימיטים וקבועים</b>"))
         head.addStretch(1)
+        self.read_pa = QPushButton("קרא קבוע/מהירות/תאוצה")
+        self.read_pa.setToolTip("קורא מכל ציר את PA[43] (ביטים למעלה), PA[52] (מהירות מקס' בביטים/ש')\n"
+                                "ו-PA[62] (תאוצה בביטים/ש²), ומציב בטבלה. נקרא גם אוטומטית בכל התחברות.")
+        self.read_pa.clicked.connect(lambda: self.ctrl.read_axis_params())
+        head.addWidget(self.read_pa)
         self.read_lim = QPushButton("קרא לימיטים מהבקר")
         self.read_lim.setToolTip("LL / HL של כל ציר, מומרים למעלות לפי הקבוע")
         self.read_lim.clicked.connect(lambda: self.ctrl.read_limits())
@@ -577,7 +582,7 @@ class MainWindow(QMainWindow):
             value = float(self.table.item(row, col).text().replace(LRM, "").replace(",", ".").strip())
         except ValueError:
             value = None
-        if value is None or (key in ("bits_per_deg", "vmax") and value <= 0):
+        if value is None or (key in ("bits_per_deg", "vmax") and value <= 0) or (key == "accel" and value < 0):
             self.log("err", f"{a.name}: ערך לא תקין ב'{self.LIMIT_COLS[col][1]}'. הערך הקודם הוחזר.")
         else:
             setattr(a.cfg, key, value)
@@ -675,6 +680,7 @@ class MainWindow(QMainWindow):
         self.fw_lbl.setText(c.firmware if real and c.connected else "")
         self.sv_btn.setEnabled(real and c.connected)
         self.read_lim.setEnabled(real and c.connected)
+        self.read_pa.setEnabled(real and c.connected)
         self.write_lim.setEnabled(real and c.connected)
         for b, (on, btn) in enumerate(zip(c.outputs, self.out_btns)):
             if btn.isChecked() != on:

@@ -22,7 +22,9 @@ import threading
 import time
 from typing import Callable
 
-from .model import MOTOR_FAULTS, N_BITS, N_OUTPUTS, Axis, BaseController, LogFn
+from .model import (
+    MOTOR_FAULTS, N_BITS, N_OUTPUTS, PA_ACCEL, PA_BITS_PER_DEG, PA_MAX_SPEED, Axis, BaseController, LogFn,
+)
 from .protocol import ProtocolError, Reply, check_clauses
 
 POLL_INTERVAL = 0.1
@@ -37,7 +39,7 @@ class LinkController(BaseController):
         self.port = transport.describe()
         self.in_bits = [False] * N_BITS
         self.abort_in = False
-        self.limits_read = False  # set by read_limits(); the GUI refreshes its table
+        self.limits_read = False  # set by read_limits() / read_axis_params(); the GUI refreshes its table
         self._q: queue.Queue = queue.Queue()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
@@ -76,6 +78,8 @@ class LinkController(BaseController):
             if vr.ok and vr.text:
                 self.firmware = vr.text
                 self.log("rx", f"גרסת בקר: {vr.text}")
+            clauses = self._axis_param_clauses()
+            self._apply_axis_params(self.transport.transact(clauses))
             self._poll()
             while not self._stop.is_set():
                 try:
@@ -299,7 +303,8 @@ class LinkController(BaseController):
         deg = self._clamp_target(a, deg)
         a.target, a.jog = deg, 0
         L = a.letter
-        self._send([f"{L}MM=0", f"{L}SM=0", f"{L}SP={self.speed_bits(a)}", f"{L}AP={a.bits(deg)}", f"{L}BG"])
+        self._send([f"{L}MM=0", f"{L}SM=0", f"{L}SP={self.speed_bits(a)}", *self._accel_clause(a),
+                    f"{L}AP={a.bits(deg)}", f"{L}BG"])
         return True
 
     def jog_start(self, i: int, direction: int) -> bool:
@@ -312,7 +317,8 @@ class LinkController(BaseController):
         a.jog, a.target = direction, None
         L = a.letter
         # Jog mode: the controller stops by itself at LL/HL (New Motion Modes manual, section 6).
-        self._send([f"{L}MM=1", f"{L}SM=0", f"{L}SP={direction * self.speed_bits(a)}", f"{L}BG"])
+        self._send([f"{L}MM=1", f"{L}SM=0", f"{L}SP={direction * self.speed_bits(a)}", *self._accel_clause(a),
+                    f"{L}BG"])
         return True
 
     def jog_stop(self, i: int) -> None:
@@ -351,6 +357,33 @@ class LinkController(BaseController):
             self.limits_read = True
 
         self._send(clauses, done)
+
+    @staticmethod
+    def _accel_clause(a: Axis) -> list[str]:
+        return [f"{a.letter}AC={round(a.cfg.accel * a.cfg.bits_per_deg)}"] if a.cfg.accel > 0 else []
+
+    def _axis_param_clauses(self) -> list[str]:
+        return [f"{a.letter}PA[{n}]" for a in self.axes for n in (PA_BITS_PER_DEG, PA_MAX_SPEED, PA_ACCEL)]
+
+    def _apply_axis_params(self, replies: list[Reply]) -> None:
+        """PA[43] bits/deg, PA[52] max speed [bits/s], PA[62] acceleration [bits/s^2] of each axis."""
+        for j, a in enumerate(self.axes):
+            bpd, vmax, acc = (replies[3 * j + k].value for k in range(3))
+            if not bpd or bpd <= 0:
+                self.log("err", f"{a.name}: {a.letter}PA[{PA_BITS_PER_DEG}] (קבוע) לא תקין ({bpd}). "
+                                "הערכים של הציר לא עודכנו.")
+                continue
+            a.cfg.bits_per_deg = float(bpd)
+            if vmax and vmax > 0:
+                a.cfg.vmax = vmax / bpd
+            if acc and acc > 0:
+                a.cfg.accel = acc / bpd
+            self.log("rx", f"{a.name}: קבוע {bpd} ביט/°, מהירות מקס' {a.cfg.vmax:g} °/ש' ({vmax} ביט/ש'), "
+                           f"תאוצה {a.cfg.accel:g} °/ש² ({acc} ביט/ש²)")
+        self.limits_read = True
+
+    def read_axis_params(self) -> None:
+        self._send(self._axis_param_clauses(), self._apply_axis_params)
 
     def write_limits(self) -> None:
         self._send([f"{a.letter}{k}={a.bits(v)}" for a in self.axes

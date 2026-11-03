@@ -15,6 +15,7 @@ class FakeNT:
                       "EM": 0, "MF": 0, "PE": 0, "LL": -200000, "HL": 200000} for L in "XYZW"}
         self.ip, self.op = 0b101, 0b10
         self.qf = {1: 0, 3: 0}
+        self.pa = {L: {43: 1000, 52: 6000, 62: 0} for L in "XYZW"}   # 1000 bits/deg, 6 deg/s, AC untouched
         self.received: list[str] = []
         self.srv = socket.socket()
         self.srv.bind(("127.0.0.1", 0))
@@ -30,6 +31,12 @@ class FakeNT:
         L, kw, idx, val, arg = m.groups()
         if kw == "VR":
             return "SC-4M_P,300,4,300,250>"
+        if kw == "PA" and idx and L in self.p:
+            pa = self.pa.setdefault(L, {})
+            if val is not None:
+                pa[int(idx)] = int(val)
+                return ">"
+            return f"{pa.get(int(idx), 0)}>"
         if kw == "QF":
             return f"{self.qf.get(int(idx or 0), 0)}>" if idx else "?>"
         if kw == "SV":

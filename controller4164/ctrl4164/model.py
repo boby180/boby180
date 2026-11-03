@@ -44,6 +44,10 @@ END_MOTION_REASONS = {
 MOTOR_FAULTS = {0: "", 1: "תקלת דרייבר", 2: "כניסת ABORT", 3: "שגיאת מיקום גדולה (PE>ER)",
                 4: "מנוע תקוע", 0x40: "שגיאת אנקודר", 0x80: "אנקודר מנותק"}
 SR_IN_TARGET = 0x20
+# Machine parameters kept by the controller's macro program in the PA array (per axis):
+PA_BITS_PER_DEG = 43   # encoder bits per degree
+PA_MAX_SPEED = 52      # max speed [bits/s]
+PA_ACCEL = 62          # acceleration [bits/s^2]
 DEFAULT_HOME_MACRO = "#HOME_{L}"   # SC-AT Macro Language manual example: XQE,#HOME_X
 
 LogFn = Callable[[str, str], None]  # (kind: "tx" | "rx" | "err", text)
@@ -58,6 +62,7 @@ class AxisSettings:
     vmax: float = 6.0            # deg/s at 100% speed
     home: float = 0.0
     bits_per_deg: float = 1000.0  # constant: encoder bits per degree
+    accel: float = 0.0           # deg/s^2 sent as AC with every move; 0 = leave the controller's AC
 
 
 @dataclass
@@ -240,6 +245,9 @@ class BaseController:
 
     def write_limits(self) -> None:
         self.log("err", "כתיבת לימיטים אפשרית רק בחיבור לבקר.")
+
+    def read_axis_params(self) -> None:
+        self.log("err", "קריאת פרמטרים (PA) אפשרית רק בחיבור לבקר.")
 
     def tick(self, dt: float) -> None:
         """Advance the simulation. The real link updates from its own thread."""

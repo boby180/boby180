@@ -35,8 +35,10 @@ def test_transport_round_trip():
     t.close()
 
 
-def connected_link():
+def connected_link(pa=None):
     nt = FakeNT()
+    if pa:
+        nt.pa = {L: dict(pa) for L in "XYZW"}
     logs = []
     axes = make_axes()
     link = LinkController(axes, LanTransport("127.0.0.1", nt.port), log=lambda k, t: logs.append((k, t)))
@@ -96,6 +98,7 @@ def test_soft_limit_clamps_before_sending():
 def test_read_and_write_limits():
     nt, link, _ = connected_link()
     nt.p["X"]["LL"], nt.p["X"]["HL"] = -150000, 175000
+    link.limits_read = False
     link.read_limits()
     assert wait_for(lambda: link.limits_read)
     assert link.axes[0].cfg.min == -150 and link.axes[0].cfg.max == 175
@@ -209,4 +212,32 @@ def test_save_flash_refused_while_moving():
     assert wait_for(lambda: link.axes[0].moving)
     assert not link.save_flash()
     assert not any(c.startswith("XSV") for c in nt.received)
+    link.close()
+
+
+def test_axis_params_read_from_pa_on_connect():
+    nt, link, logs = connected_link({43: 1200, 52: 7200, 62: 36000})
+    x = link.axes[0]
+    assert x.cfg.bits_per_deg == 1200 and x.cfg.vmax == 6 and x.cfg.accel == 30   # 7200/1200, 36000/1200
+    nt.pa["Z"] = {43: 2000, 52: 20000, 62: 0}
+    link.read_axis_params()
+    z = link.axes[2]
+    assert wait_for(lambda: z.cfg.bits_per_deg == 2000)
+    assert z.cfg.vmax == 10 and z.cfg.accel == 30   # PA[62]=0 keeps the previous acceleration
+    nt.pa["W"] = {43: 0, 52: 1, 62: 1}
+    link.limits_read = False
+    link.read_axis_params()
+    assert wait_for(lambda: any("PA[43]" in t and "לא תקין" in t for _, t in logs))
+    assert link.axes[3].cfg.bits_per_deg == 1200
+    link.close()
+
+
+def test_moves_send_ac_from_pa62():
+    nt, link, _ = connected_link({43: 1200, 52: 7200, 62: 36000})
+    link.set_axis_servo(0, True)
+    assert wait_for(lambda: link.axes[0].motor_on)
+    link.move_to(0, 10.0)
+    assert wait_for(lambda: "XAP=12000" in nt.received)
+    i = nt.received.index("XAP=12000")
+    assert "XAC=36000" in nt.received[i - 3:i] and "XSP=7200" in nt.received[i - 3:i]
     link.close()
