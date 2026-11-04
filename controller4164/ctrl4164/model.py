@@ -89,6 +89,7 @@ class Axis:
     pe: int | None = None         # PE, position error [counts]
     macro_running: bool | None = None   # QF[1] bit i
     macro_rte: bool | None = None       # QF[3] bit i, macro stopped on a run-time error
+    homing: bool = False                # a Home macro was started and has not finished yet
 
     def bits(self, deg: float | None = None) -> int:
         return round((self.pos if deg is None else deg) * self.cfg.bits_per_deg)
@@ -193,7 +194,7 @@ class BaseController:
 
     def home(self, i: int) -> bool:
         if self.home_macro:
-            return self.run_macro(i, self.home_macro.replace("{L}", self.axes[i].letter))
+            return self.run_macro(i, self.home_macro.replace("{L}", self.axes[i].letter), home=True)
         return self.move_to(i, self.axes[i].cfg.home, "HOME")
 
     def home_all(self) -> bool:
@@ -205,7 +206,7 @@ class BaseController:
     def set_axis_servo(self, i: int, on: bool) -> bool:
         raise NotImplementedError
 
-    def run_macro(self, i: int, label: str) -> bool:
+    def run_macro(self, i: int, label: str, home: bool = False) -> bool:
         self.log("err", f"הפעלת מאקרו ({label}) אפשרית רק בחיבור לבקר. בסימולציה Home נוסע למיקום ה-Home.")
         return self.move_to(i, self.axes[i].cfg.home, "HOME")
 

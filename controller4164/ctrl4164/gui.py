@@ -242,7 +242,8 @@ class AxisPanel(QGroupBox):
         self.f_min.set("bad" if a.at_hw_min else "")
         self.f_max.set("bad" if a.at_hw_max else "")
         self.f_soft.set("warn" if a.at_soft_limit else "")
-        self.f_home.set("ok" if a.at_home and a.homed else "")
+        self.f_home.set("warn" if a.homing else "ok" if a.homed else "")
+        self.f_home.setText("Home…" if a.homing else "Home")
         self.f_move.set("ok" if a.moving else "")
         alarm = a.hw_hit or a.drv_fault or bool(a.mf)
         if alarm != getattr(self, "_alarm_style", None):
@@ -385,6 +386,7 @@ class MainWindow(QMainWindow):
         self.soft.toggled.connect(lambda on: self.ctrl.set_soft_limits(on))
         self.home_mode = QComboBox()
         self.home_mode.addItems(["נסיעה למיקום Home", "מאקרו Home בבקר"])
+        self.home_mode.setCurrentIndex(1)  # the controller has #HOME_X ... #HOME_W macros
         self.home_label = QLineEdit(DEFAULT_HOME_MACRO)
         self.home_label.setLayoutDirection(Qt.LeftToRight)
         self.home_label.setFixedWidth(100)

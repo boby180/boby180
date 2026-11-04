@@ -15,6 +15,7 @@ class FakeNT:
                       "EM": 0, "MF": 0, "PE": 0, "LL": -200000, "HL": 200000} for L in "XYZW"}
         self.ip, self.op = 0b101, 0b10
         self.qf = {1: 0, 3: 0}
+        self.labels = {"#HOME_X", "#HOME_Y", "#HOME_Z", "#HOME_W"}
         # PA[43] = bits/deg x 10000: 1000 bits/deg, 6 deg/s, AC untouched
         self.pa = {L: {43: 10000000, 52: 6000, 62: 0} for L in "XYZW"}
         self.received: list[str] = []
@@ -45,8 +46,14 @@ class FakeNT:
                 return "?>"  # SV needs all motors off
             self.saved = arg or "all"
             return ">"
-        if kw in ("QE", "QK"):
-            return ">" if kw != "QE" or (arg or "").startswith("#") else "?>"
+        if kw == "QE":
+            if not (arg or "").startswith("#") or arg not in self.labels:
+                return "?>"
+            self.qf[1] |= 1 << "XYZW".index(L)  # macro runs until the test clears the bit
+            return ">"
+        if kw == "QK":
+            self.qf[1] = 0
+            return ">"
         if kw in ("OS", "OC"):
             if arg is None or not 1 <= int(arg) <= 8:
                 return "?>"

@@ -29,6 +29,7 @@ from .model import (
 from .protocol import ProtocolError, Reply, check_clauses
 
 POLL_INTERVAL = 0.1
+HOME_START_TIMEOUT = 3.0  # a Home macro that never shows as running in QF[1] within this time is reported
 STOP_REPORT_DELAY = 0.5  # the axis settles after MS goes to 0; report the stop position this much later
 
 
@@ -42,6 +43,9 @@ class LinkController(BaseController):
         self.in_bits = [False] * N_BITS
         self.abort_in = False
         self._stop_report_at: dict[int, float] = {}  # axis index -> time to log its stop position
+        self._home_started: dict[int, tuple[float, bool]] = {}  # axis -> (start time, seen running)
+        self._home_done_at: dict[int, float] = {}               # axis -> time to report Home finished
+        self._home_queue: list[int] = []                        # axes waiting for "Home all"
         self.limits_read = False  # set by read_limits() / read_axis_params(); the GUI refreshes its table
         self._q: queue.Queue = queue.Queue()
         self._stop = threading.Event()
@@ -135,6 +139,52 @@ class LinkController(BaseController):
         r3 = self.transport.transact(slow)
         self._apply_poll(r1, r2, now)
         self._apply_macros(r3)
+        self._track_homing(now)
+
+    def _track_homing(self, now: float) -> None:
+        """Follow Home macros started with QE: running in QF[1] -> stopped -> report and start the next."""
+        for i, (since, seen) in list(self._home_started.items()):
+            a = self.axes[i]
+            if a.macro_running:
+                self._home_started[i] = (since, True)
+            elif seen or a.macro_rte:
+                del self._home_started[i]
+                if a.macro_rte:
+                    self._home_failed(i, f"מאקרו ה-Home נעצר בשגיאת ריצה (בדוק {a.letter}QC)")
+                else:
+                    self._home_done_at[i] = now + STOP_REPORT_DELAY
+            elif now - since > HOME_START_TIMEOUT:
+                del self._home_started[i]
+                self._home_failed(i, "המאקרו לא התחיל לרוץ (QF[1]). בדוק את שם התווית ושהמאקרו צרוב בבקר")
+        for i, due in list(self._home_done_at.items()):
+            if now >= due:
+                del self._home_done_at[i]
+                a = self.axes[i]
+                a.homing, a.homed = False, True
+                self.log("rx", f"{a.name}: Home הסתיים. מיקום {a.pos:.3f}° ({a.bits()} bits)")
+                self._start_next_home()
+
+    def _home_failed(self, i: int, why: str) -> None:
+        a = self.axes[i]
+        a.homing = False
+        self.log("err", f"{a.name}: Home נכשל: {why}")
+        if self._home_queue:
+            self.log("err", "Home לכל הצירים הופסק.")
+            self._home_queue.clear()
+
+    def _start_next_home(self) -> None:
+        if self._home_queue:
+            BaseController.home(self, self._home_queue.pop(0))
+
+    def home_all(self) -> bool:
+        if not self.home_macro:
+            return super().home_all()
+        if not self.connected:
+            self.log("err", "אין חיבור לבקר.")
+            return False
+        self.log("tx", "HOME ALL: ציר אחרי ציר")
+        self._home_queue = list(range(1, len(self.axes)))
+        return self.home(0)
 
     def _apply_macros(self, r3: list[Reply]) -> None:
         n = len(self.axes)
@@ -248,7 +298,7 @@ class LinkController(BaseController):
         self._send([f"{self.axes[i].letter}MO={int(on)}"])
         return True
 
-    def run_macro(self, i: int, label: str) -> bool:
+    def run_macro(self, i: int, label: str, home: bool = False) -> bool:
         if not self.connected:
             self.log("err", "אין חיבור לבקר.")
             return False
@@ -258,12 +308,37 @@ class LinkController(BaseController):
         if not label.startswith("#") or len(label) > 7:
             self.log("err", f"שם מאקרו לא תקין: {label}. צריך להתחיל ב-# ועד 6 תווים (מגבלת הבקר).")
             return False
-        self._send([f"{self.axes[i].letter}QE,{label}"])
+        a = self.axes[i]
+        if home:
+            if a.homing:
+                self.log("err", f"{a.name}: Home כבר רץ.")
+                return False
+            a.homing, a.homed = True, False
+            self.log("tx", f"{a.name}: מתחיל Home ({a.letter}QE,{label})")
+
+        def done(replies: list[Reply]) -> None:
+            if home and replies[0].ok:
+                self._home_started[i] = (time.monotonic(), False)
+            elif home:
+                self._home_failed(i, f"הבקר דחה את {a.letter}QE,{label} (אולי אין תווית כזו בבקר)")
+
+        self._send([f"{a.letter}QE,{label}"], done)
         return True
 
     def kill_macros(self) -> None:
+        self._cancel_homing("עצור מאקרו")
         if self.connected:
             self._send_now(["XQK"])
+
+    def _cancel_homing(self, why: str) -> None:
+        busy = [a.name for a in self.axes if a.homing]
+        self._home_queue.clear()
+        self._home_started.clear()
+        self._home_done_at.clear()
+        for a in self.axes:
+            a.homing = False
+        if busy:
+            self.log("err", f"Home בוטל ({why}): {', '.join(busy)}")
 
     def save_flash(self) -> bool:
         """Turn every motor off, then save the parameters (not the macro) with XSV,1.
@@ -289,6 +364,7 @@ class LinkController(BaseController):
         return True
 
     def emergency_stop(self) -> None:
+        self._cancel_homing("עצירת חירום")
         self.estop = True
         if self.connected:
             self._send_now([f"{a.letter}AB" for a in self.axes] + [f"{a.letter}MO=0" for a in self.axes])

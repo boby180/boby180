@@ -259,3 +259,51 @@ def test_stop_position_is_reported_after_settling():
     msg = [t for _, t in logs if "נעצר" in t][0]
     assert "+10.500" in msg or "10.500" in msg
     link.close()
+
+
+def test_home_macro_reports_when_done():
+    nt, link, logs = connected_link()
+    link.home_macro = "#HOME_{L}"
+    assert link.home(2)
+    z = link.axes[2]
+    assert z.homing
+    assert wait_for(lambda: nt.qf[1] & 0b100)               # ZQE,#HOME_Z started the macro
+    assert wait_for(lambda: z.macro_running)
+    nt.p["Z"]["PS"] = 1234
+    nt.qf[1] = 0                                           # macro ends
+    assert wait_for(lambda: z.homed and not z.homing, timeout=3)
+    assert any("Home הסתיים" in t and "1.234" in t for _, t in logs)
+    link.close()
+
+
+def test_home_all_runs_axes_one_after_another():
+    nt, link, logs = connected_link()
+    link.home_macro = "#HOME_{L}"
+    assert link.home_all()
+    for bit, letter in enumerate("XYZW"):
+        assert wait_for(lambda: nt.qf[1] == 1 << bit, timeout=3), letter   # only this axis runs
+        time.sleep(0.25)
+        nt.qf[1] = 0
+    assert wait_for(lambda: all(a.homed for a in link.axes), timeout=3)
+    link.close()
+
+
+def test_home_with_unknown_label_fails_and_stops_home_all():
+    nt, link, logs = connected_link()
+    link.home_macro = "#HOM_{L}"
+    assert link.home_all()
+    assert wait_for(lambda: any("Home נכשל" in t for _, t in logs))
+    assert not link.axes[0].homing and not link._home_queue
+    assert not any("YQE" in c for c in nt.received)
+    link.close()
+
+
+def test_kill_macros_cancels_homing():
+    nt, link, logs = connected_link()
+    link.home_macro = "#HOME_{L}"
+    link.home(0)
+    assert wait_for(lambda: link.axes[0].macro_running)
+    link.kill_macros()
+    assert not link.axes[0].homing
+    assert any("Home בוטל" in t for _, t in logs)
+    link.close()
