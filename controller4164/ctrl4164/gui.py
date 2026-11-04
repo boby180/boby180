@@ -639,8 +639,10 @@ class MainWindow(QMainWindow):
             self.port.setCurrentText(app["connection"])
         if "home_label" in app:
             self.home_label.setText(app["home_label"])
-        if "home_mode" in app:
-            self.home_mode.setCurrentIndex(1 if app["home_mode"] == "macro" else 0)
+        # "home_mode_v2" is written since v0.7.0. Older files saved "position" only because it was the
+        # default then, so they keep the macro default instead.
+        if "home_mode_v2" in app:
+            self.home_mode.setCurrentIndex(1 if app["home_mode_v2"] == "macro" else 0)
         self._home_mode_changed()
         return ok
 
@@ -680,7 +682,7 @@ class MainWindow(QMainWindow):
         try:
             app = {"ip": self.ip.text().strip(), "lan_port": self.lan_port.currentText(),
                    "connection": self.port.currentText(), "home_label": self.home_label.text().strip(),
-                   "home_mode": "macro" if self.home_mode.currentIndex() == 1 else "position"}
+                   "home_mode_v2": "macro" if self.home_mode.currentIndex() == 1 else "position"}
             save_settings(path, self.ctrl.axes, app)
             self._remember_settings_file(path)
             self.log("rx", f"הגדרות נשמרו ב-{self.settings_path}")
