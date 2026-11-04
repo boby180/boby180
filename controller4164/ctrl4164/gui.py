@@ -384,22 +384,22 @@ class MainWindow(QMainWindow):
         self.soft = QCheckBox("לימיטים בתוכנה")
         self.soft.setChecked(True)
         self.soft.toggled.connect(lambda on: self.ctrl.set_soft_limits(on))
-        self.home_mode = QComboBox()
-        self.home_mode.addItems(["נסיעה למיקום Home", "מאקרו Home בבקר"])
-        self.home_mode.setCurrentIndex(1)  # the controller has #HOME_X ... #HOME_W macros
+        # The Home button always runs the controller's Home macro (XQE,#HOME_X ...). Moving to 0 deg is
+        # done with "סע ליעד", so there is no second Home mode to get wrong.
         self.home_label = QLineEdit(DEFAULT_HOME_MACRO)
         self.home_label.setLayoutDirection(Qt.LeftToRight)
         self.home_label.setFixedWidth(100)
         self.home_label.setToolTip("שם התווית במאקרו של הבקר. {L} מוחלף באות הציר: #HOME_X, #HOME_Y ...\n"
                                    "נשלח כ-XQE,#HOME_X. עד 6 תווים אחרי #.")
-        self.home_mode.currentIndexChanged.connect(self._home_mode_changed)
         self.home_label.editingFinished.connect(self._home_mode_changed)
         for x in (QLabel("צעד:"), self.step, QLabel("מהירות:"), self.speed, self.speed_lbl, self.soft):
             controls.addWidget(x)
         controls.addStretch(1)
         lay.addLayout(controls)
         home_row = QHBoxLayout()
-        for x in (QLabel("כפתור Home:"), self.home_mode, self.home_label):
+        hint = QLabel("כפתור Home מריץ את תוכנית ה-Home שבבקר לכל ציר (למשל XQE,#HOME_X). תווית:")
+        hint.setStyleSheet("color:#5d6b7a;")
+        for x in (hint, self.home_label):
             home_row.addWidget(x)
         home_row.addStretch(1)
         lay.addLayout(home_row)
@@ -645,12 +645,8 @@ class MainWindow(QMainWindow):
             self.lan_port.setEditText(app["lan_port"])
         if app.get("connection") in (SIM_PORT, LAN_PORT):
             self.port.setCurrentText(app["connection"])
-        if "home_label" in app:
+        if app.get("home_label", "").startswith("#"):
             self.home_label.setText(app["home_label"])
-        # "home_mode_v2" is written since v0.7.0. Older files saved "position" only because it was the
-        # default then, so they keep the macro default instead.
-        if "home_mode_v2" in app:
-            self.home_mode.setCurrentIndex(1 if app["home_mode_v2"] == "macro" else 0)
         self._home_mode_changed()
         return ok
 
@@ -689,8 +685,7 @@ class MainWindow(QMainWindow):
             path = path.with_name(path.name + ".json")
         try:
             app = {"ip": self.ip.text().strip(), "lan_port": self.lan_port.currentText(),
-                   "connection": self.port.currentText(), "home_label": self.home_label.text().strip(),
-                   "home_mode_v2": "macro" if self.home_mode.currentIndex() == 1 else "position"}
+                   "connection": self.port.currentText(), "home_label": self.home_label.text().strip()}
             save_settings(path, self.ctrl.axes, app)
             self._remember_settings_file(path)
             self.log("rx", f"הגדרות נשמרו ב-{self.settings_path}")
@@ -698,9 +693,11 @@ class MainWindow(QMainWindow):
             self.log("err", f"השמירה נכשלה: {e}")
 
     def _home_mode_changed(self, *_args) -> None:
-        macro = self.home_mode.currentIndex() == 1
-        self.home_label.setEnabled(macro)
-        self.ctrl.home_macro = self.home_label.text().strip() if macro else ""
+        label = self.home_label.text().strip()
+        if not label.startswith("#"):
+            label = DEFAULT_HOME_MACRO
+            self.home_label.setText(label)
+        self.ctrl.home_macro = label
 
     def _save_flash(self) -> None:
         if self.ctrl.simulated or not self.ctrl.connected:
