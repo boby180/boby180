@@ -550,6 +550,8 @@ class MainWindow(QMainWindow):
         self.console.appendHtml(
             f"<span style='color:#7a8794'>{stamp}</span> <span style='color:{LOG_COLORS[kind]}'>{tag}</span> "
             + text.replace("&", "&amp;").replace("<", "&lt;"))
+        bar = self.console.verticalScrollBar()
+        bar.setValue(bar.maximum())  # always show the newest line
 
     def step_deg(self) -> float:
         return float(self.step.currentData())
@@ -596,9 +598,15 @@ class MainWindow(QMainWindow):
 
     def _send_cmd(self) -> None:
         text = self.cmd.text().strip()
-        if text:
-            self.ctrl.send_raw(text)
-            self.cmd.clear()
+        if not text:
+            return
+        if any("\u0590" <= ch <= "\u05ff" for ch in text):
+            self.log("err", f"הפקודה '{text}' כתובה באותיות עבריות. החלף את המקלדת לאנגלית (Alt+Shift) ונסה שוב.")
+            return
+        # Keywords must be upper case; macro labels after '#' are case-sensitive, so keep them as typed.
+        head, sep, label = text.partition("#")
+        self.ctrl.send_raw(head.upper() + sep + label)
+        self.cmd.clear()
 
     def _fill_limits_table(self) -> None:
         self.table.blockSignals(True)
