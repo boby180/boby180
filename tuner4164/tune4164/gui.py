@@ -12,7 +12,7 @@ from PySide6.QtCore import QSettings, Qt
 from PySide6.QtGui import QColor, QPalette
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QFileDialog, QFormLayout, QGroupBox, QHBoxLayout, QHeaderView, QLabel,
-    QMainWindow, QPushButton, QSpinBox, QSplitter, QTableWidget, QTableWidgetItem, QTextBrowser, QVBoxLayout,
+    QDialog, QDialogButtonBox, QMainWindow, QPushButton, QSpinBox, QSplitter, QTableWidget, QTableWidgetItem, QTextBrowser, QVBoxLayout,
     QWidget,
 )
 
@@ -27,6 +27,42 @@ LRM = "‎"
 ROLE_LABELS = [("time", "זמן"), ("reference", "רצוי (Desired)"), ("actual", "בפועל (Position/Velocity)"),
                ("error", "שגיאת מיקום (PE)"), ("command", "פקודת דרייבר"),
                ("velocity", "מהירות מהאנקודר"), ("tacho", "חיישן מהירות / כניסה אנלוגית")]
+GUIDE_SHORT = (
+    "<b>איזו הקלטה לעשות ב-SC-Shell כדי לקבל המלצות ל-KP / KI / KD:</b> "
+    "בתיקיית Data Recording בוחרים לאותו ציר: "
+    "<b>RV[1] = Position Error</b>, <b>RV[2] = Desired Position</b>, <b>RV[3] = Position</b>, "
+    "<b>RV[4] = Driver Command</b>. "
+    "מקליטים <b>תנועה רגילה</b> ו<b>תנועה קטנה (0.5°-1°)</b>, וממשיכים להקליט <b>כשנייה אחרי שהציר עוצר</b>. "
+    "שומרים כקובץ SDV ופותחים כאן."
+)
+GUIDE_FULL = """
+<h3>איזו הקלטה לעשות</h3>
+<p>כדי לשפוט את הכיול צריך לראות <b>מה הבקר ביקש</b> מול <b>מה הציר עשה</b>. הקלטה של מהירות מהאנקודר וחיישן
+מהירות בלבד (למשל XVel ו-XAnlgInp) בודקת רק את חיישן המהירות, לא את KP / KI / KD.</p>
+<h4>1. ב-SC-Shell, תיקיית Data Recording, לאותו ציר:</h4>
+<table border="1" cellpadding="4" cellspacing="0">
+<tr><th>וקטור</th><th>לבחור</th><th>למה</th></tr>
+<tr><td>RV[1]</td><td><b>Position Error</b></td><td>הכי חשוב: כמה הציר מפגר ואיך הוא מתייצב</td></tr>
+<tr><td>RV[2]</td><td><b>Desired Position</b></td><td>מה הבקר ביקש, מתי התנועה מתחילה ונגמרת</td></tr>
+<tr><td>RV[3]</td><td><b>Position</b></td><td>מה הציר עשה בפועל</td></tr>
+<tr><td>RV[4]</td><td><b>Driver Command</b></td><td>הפקודה למנוע: רוויה ורעש (למשל KD גבוה מדי)</td></tr>
+<tr><td>RV[5]</td><td>Analog Input (לא חובה)</td><td>חיישן המהירות, לבדיקת ה-Tacho</td></tr>
+</table>
+<h4>2. אילו תנועות להקליט</h4>
+<ul>
+<li><b>תנועה רגילה לנקודה</b> במהירות ובתאוצה הרגילות של המכונה. בתוכנה: "תנועה רגילה לנקודה (PTP)".</li>
+<li><b>תנועה קטנה</b> של 0.5° עד 1°. כאן רואים הכי טוב חריגה ותנודות. בתוכנה: "צעד מיקום קטן".</li>
+<li>להמשיך להקליט <b>כחצי שנייה עד שנייה אחרי שהציר עוצר</b>, כדי לראות אם הוא רועד או מתייצב.</li>
+</ul>
+<h4>3. אורך ההקלטה (RL ו-RG)</h4>
+<p>משך ההקלטה = RL × RG × 61µs. בוחרים RG כך שההקלטה תכסה את התנועה ועוד שנייה, ולא הרבה יותר.
+לדוגמה: RL=8000 ו-RG=4 נותנים 2 שניות, נקודה כל 0.24ms.</p>
+<h4>4. בדיקה מתקדמת (לפי מדריך היצרן, רק למי שמכיר)</h4>
+<p><b>צעד מהירות עם KP=0</b> לכיול KD ו-KI של לולאת המהירות. בזמן הבדיקה היצרן מגדיל את ER, כלומר ההגנה
+מפני שגיאה גדולה כבויה. מקליטים מהירות רצויה ובפועל ופקודת דרייבר.</p>
+<h4>5. מה לשלוח</h4>
+<p>את קובץ ה-SDV ואת קובץ ה-PRM של המכונה (Upload Controller Parameters).</p>
+"""
 SAFETY = ("ההמלצות מבוססות על ההקלטה בלבד, ולא מחליפות שיקול דעת. משנים פרמטר אחד בכל פעם, "
           "בודקים במהירות נמוכה עם יד על לחצן החירום, ושומרים בבקר (SV) רק כשמרוצים.")
 
@@ -63,6 +99,19 @@ class MainWindow(QMainWindow):
         safety.setWordWrap(True)
         safety.setStyleSheet("background:#fff4e0; border:1px solid #e08a00; border-radius:6px; padding:6px; color:#5a3b00;")
         outer.addWidget(safety)
+
+        guide = QHBoxLayout()
+        self.guide = QLabel(GUIDE_SHORT)
+        self.guide.setWordWrap(True)
+        self.guide.setStyleSheet("background:#e6f0fa; border:2px solid #1f6fb3; border-radius:6px; padding:8px;"
+                                 " color:#0f2f52; font-size:11pt;")
+        guide_btn = QPushButton("הסבר מלא:\nאיזו הקלטה לעשות")
+        guide_btn.setStyleSheet("QPushButton { background:#1f6fb3; color:white; font-weight:bold; padding:8px 14px;"
+                                " border-radius:6px; }")
+        guide_btn.clicked.connect(self.show_guide)
+        guide.addWidget(self.guide, 1)
+        guide.addWidget(guide_btn)
+        outer.addLayout(guide)
 
         split = QSplitter(Qt.Horizontal)
         outer.addWidget(split, 1)
@@ -326,10 +375,43 @@ class MainWindow(QMainWindow):
             self.plot2.plot(t, pe, pen=pg.mkPen("#c62f2f", width=1))
             self.plot2.setTitle("שגיאת מיקום")
 
+    def show_guide(self) -> None:
+        dlg = QDialog(self)
+        dlg.setWindowTitle("איזו הקלטה לעשות")
+        dlg.setLayoutDirection(Qt.RightToLeft)
+        lay = QVBoxLayout(dlg)
+        text = QTextBrowser()
+        text.setHtml(GUIDE_FULL)
+        lay.addWidget(text)
+        buttons = QDialogButtonBox(QDialogButtonBox.Close)
+        buttons.rejected.connect(dlg.reject)
+        lay.addWidget(buttons)
+        dlg.resize(760, 640)
+        dlg.exec()
+
+    def _missing_for_tuning(self) -> list[str]:
+        """Vectors the recording lacks for KP/KI/KD advice (what was asked, what happened, the command)."""
+        if self.rec is None:
+            return []
+        missing = []
+        if self.rec.guess("error") is None and self.rec.guess("reference") is None:
+            missing.append("Position Error או Desired Position (מה הבקר ביקש)")
+        if self.rec.guess("actual") is None and self.rec.guess("error") is None:
+            missing.append("Position (מה הציר עשה)")
+        if self.rec.guess("command") is None:
+            missing.append("Driver Command (הפקודה למנוע)")
+        return missing
+
     def _show_advice(self) -> None:
         a = self.advice
         axis = self.axis.currentText()
         parts = []
+        missing = self._missing_for_tuning()
+        if missing:
+            parts.append("<div style='background:#e6f0fa; border:2px solid #1f6fb3; padding:8px;'>"
+                         "<p style='font-size:12pt'><b>כדי לקבל המלצות ל-KP / KI / KD חסרים בהקלטה הזו:</b></p><ul>"
+                         + "".join(f"<li>{html.escape(m)}</li>" for m in missing)
+                         + "</ul><p>ראה את ההסבר בכחול למעלה, או לחץ \"הסבר מלא: איזו הקלטה לעשות\".</p></div>")
         for w in a.warnings:
             parts.append(f"<p style='color:#b86e00'>⚠ {html.escape(w)}</p>")
         parts.append("<ul>" + "".join(f"<li>{html.escape(f)}</li>" for f in a.findings) + "</ul>")
