@@ -108,5 +108,46 @@ def test_recording_whitespace_without_header_uses_sample_time():
 def test_binary_recording_is_refused_with_explanation(tmp_path):
     p = tmp_path / "rec.sdv"
     p.write_bytes(b"SDV\x00\x01\x02" * 100)
-    with pytest.raises(ValueError, match="SDViewer"):
+    with pytest.raises(ValueError, match="SDV"):
         load_recording(p)
+
+
+def _sdv_bytes(vectors):
+    import struct
+    out = b""
+    for name, values in vectors:
+        nm = name.encode() + b"\0"
+        out += struct.pack("<4I", 0, 1, len(values), 0) + struct.pack("<I", len(nm)) + nm
+        out += np.asarray(values, "<f8").tobytes()
+    return out + b"\x33\x00\x00\x00\x78\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00PropMotionRecorder\r\n..."
+
+
+def test_sdv_file_is_read_with_time_in_ms(tmp_path):
+    n = 500
+    t_ms = np.arange(n) * 0.30515
+    pos = 1000 * np.sin(t_ms / 50)
+    p = tmp_path / "rec.sdv"
+    p.write_bytes(_sdv_bytes([("YPos", pos), ("YAnlgInp", pos * 0.5), ("YVeldt", np.gradient(pos)), ("Time", t_ms)]))
+    rec = load_recording(p)
+    assert rec.names == ["YPos", "YAnlgInp", "YVeldt", "Time"] and rec.data.shape == (n, 4)
+    assert rec.time_column == 3 and abs(rec.time[1] - 0.00030515) < 1e-12
+    assert rec.guess("actual") == 0 and rec.guess("tacho") == 1 and rec.guess("velocity") == 2
+
+
+def test_tacho_gain_off_by_5_percent_suggests_new_ag():
+    from tune4164.analysis import tacho_metrics
+    t = np.linspace(0, 2, 4000)
+    vel = 12000 * np.sin(2 * np.pi * 1.5 * t)
+    tacho = 1.05 * vel + np.random.default_rng(1).normal(0, 20, len(t))
+    an = Analysis(tacho=tacho_metrics(vel, tacho))
+    adv = advise("PIV", "tacho", {"AG": -48388, "AF": 11}, an)
+    assert abs(an.tacho.gain - 1.05) < 0.005 and an.tacho.correlation > 0.999
+    assert adv.primary.param == "AG" and abs(adv.primary.new - (-48388 / an.tacho.gain)) <= 1
+
+
+def test_tacho_within_2_percent_needs_no_change():
+    from tune4164.analysis import tacho_metrics
+    t = np.linspace(0, 2, 4000)
+    vel = 12000 * np.sin(2 * np.pi * 1.5 * t)
+    adv = advise("PIV", "tacho", {"AG": -48388, "AF": 11}, Analysis(tacho=tacho_metrics(vel, 1.0024 * vel - 4)))
+    assert adv.status == "ok" and not adv.changes

@@ -46,7 +46,20 @@ class CommandMetrics:
 
 
 @dataclass
+class TachoMetrics:
+    """Speed sensor (Tacho on an analog input) against the encoder speed, both recorded."""
+    gain: float = 0.0                    # tacho = gain * encoder + offset
+    offset: float = 0.0
+    correlation: float = 0.0
+    residual_pct: float = 0.0            # rms of tacho - fit, % of the speed rms
+    lag_samples: int = 0                 # tacho delayed (+) or ahead (-) of the encoder speed
+    ok: bool = False
+    note: str = ""
+
+
+@dataclass
 class Analysis:
+    tacho: TachoMetrics | None = None
     step: StepMetrics | None = None
     move: MoveMetrics | None = None
     command: CommandMetrics | None = None
@@ -157,6 +170,26 @@ def move_metrics(t: np.ndarray, pe: np.ndarray, moving: np.ndarray | None = None
     cr = _crossings(after_t, after, float(np.mean(after[-tail:])), tol / 2)
     if len(cr) >= 3:
         m.residual_freq = float(1.0 / (2 * np.mean(np.diff(cr))))
+    m.ok = True
+    return m
+
+
+def tacho_metrics(vel: np.ndarray, tacho: np.ndarray, max_lag: int = 40) -> TachoMetrics:
+    m = TachoMetrics()
+    n = min(len(vel), len(tacho))
+    if n < 50 or np.std(vel[:n]) == 0:
+        m.note = "אין מספיק תנועה בהקלטה כדי להשוות"
+        return m
+    v, a = vel[:n].astype(float), tacho[:n].astype(float)
+    m.gain, m.offset = (float(x) for x in np.polyfit(v, a, 1))
+    m.correlation = float(np.corrcoef(v, a)[0, 1])
+    res = a - (m.gain * v + m.offset)
+    m.residual_pct = float(np.std(res) / (np.std(a) + 1e-12) * 100)
+    x, y = a - a.mean(), v - v.mean()
+    L = min(max_lag, n // 4)
+    lags = range(-L, L + 1)
+    cc = [float(np.dot(x[L + k:n - L + k], y[L:n - L])) for k in lags]
+    m.lag_samples = list(lags)[int(np.argmax(cc))]
     m.ok = True
     return m
 

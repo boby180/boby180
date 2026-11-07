@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from .analysis import Analysis
 
 TESTS = {
+    "tacho": "השוואת חיישן מהירות (Tacho) לאנקודר",
     "velocity_step": "צעד מהירות (KP=0)",
     "position_step": "צעד מיקום קטן",
     "move": "תנועה רגילה לנקודה (PTP)",
@@ -35,8 +36,8 @@ class Change:
             return None
         v = int(round(self.old * self.factor))
         if v == self.old:
-            v += 1 if self.factor > 1 else -1
-        return max(0, v)
+            v += (1 if self.factor > 1 else -1) * (1 if self.old >= 0 else -1)
+        return v if self.old < 0 else max(0, v)  # AG may be negative; loop gains never are
 
     @property
     def percent(self) -> int:
@@ -76,6 +77,41 @@ def advise(mode: str, test: str, gains: dict[str, int | None], an: Analysis) -> 
         if cmd.noise_ratio > 0.15:
             add("KD", 0.8, "פקודת הדרייבר רועשת (קפיצות בין דגימות). בדרך כלל זה KD גבוה מדי, "
                            "מה שנשמע כזמזום או שריקה. שקול גם מסנן מסדר 2 (100-400Hz) כפי שהיצרן ממליץ.")
+
+    if test == "tacho":
+        tm = an.tacho
+        if not (tm and tm.ok):
+            adv.findings.append(tm.note if tm else "בחר עמודת מהירות מהאנקודר ועמודת חיישן מהירות")
+            adv.status = "stop"
+            return adv
+        adv.findings.append(f"חיישן המהירות = {tm.gain:.4f} × מהירות האנקודר {tm.offset:+.1f}  "
+                            f"(התאמה {tm.correlation:.5f}, סטייה {tm.residual_pct:.2f}%, השהיה {tm.lag_samples} דגימות)")
+        if tm.correlation < 0.99:
+            adv.findings.append("ההתאמה בין החיישן לאנקודר חלשה: בדוק חיווט, הארקה ורעש בחיישן לפני כיול הלולאה.")
+        if tm.gain < 0:
+            adv.findings.append("הסימן של החיישן הפוך לאנקודר. צריך להפוך את סימן AG (או את חיווט החיישן).")
+        err = abs(abs(tm.gain) - 1.0)
+        ag, af = g("AG"), g("AF")
+        if err > 0.02:
+            if ag is not None:
+                adv.changes.append(Change("AG", ag, 1.0 / abs(tm.gain),
+                                          f"החיישן קורא {abs(tm.gain) * 100:.1f}% ממהירות האנקודר. לפי המדריך (סעיף 3.2) "
+                                          f"מהירות החיישן צריכה להיות שווה למהירות האנקודר. ההגבר הוא AG×2^-AF"
+                                          + (f" (AF={af})" if af is not None else "") + ", ולכן משנים את AG."))
+            else:
+                adv.findings.append("כדי לחשב AG חדש צריך את AG ו-AF של הציר (מה-PRM).")
+        else:
+            adv.findings.append(f"הכיול של חיישן המהירות טוב: הפרש של {err * 100:.2f}% בלבד (היעד: פחות מ-2%).")
+        if tm.residual_pct > 3:
+            adv.findings.append("יש רעש או אי-לינאריות בחיישן (סטייה מעל 3%). ייתכן שכדאי מסנן או בדיקת חיווט.")
+        if abs(tm.lag_samples) > 2:
+            adv.findings.append(f"החיישן מאחר ב-{tm.lag_samples} דגימות ביחס לאנקודר. השהיה כזו מגבילה את הגבר "
+                                "לולאת המהירות (KD).")
+        adv.findings.append("ההקלטה הזו בודקת את חיישן המהירות, לא את הכיול של KP/KI/KD. להמלצות על הכיול צריך "
+                            "הקלטה עם מיקום רצוי / שגיאת מיקום ופקודת דרייבר.")
+        if adv.changes:
+            adv.status = "change"
+        return adv
 
     if test == "velocity_step" and mode == "PIV":
         if g("KP"):

@@ -28,14 +28,7 @@ jobs:
           VER=$(python -c "from ctrl4164.version import __version__; print(__version__)")
           echo "VER=$VER" >> "$GITHUB_ENV"
           python -m PyInstaller --noconfirm --clean --onefile --windowed --name "Controller4164-v$VER" run.py
-          TVER=$(python -c "from tune4164.version import __version__; print(__version__)")
-          echo "TVER=$TVER" >> "$GITHUB_ENV"
-          python -m PyInstaller --noconfirm --clean --onefile --windowed --name "Tuner4164-v$TVER" run_tuner.py
       - uses: actions/upload-artifact@v4
         with:
           name: Controller4164-v${{ env.VER }}
           path: controller4164/dist/Controller4164-v${{ env.VER }}.exe
-      - uses: actions/upload-artifact@v4
-        with:
-          name: Tuner4164-v${{ env.TVER }}
-          path: controller4164/dist/Tuner4164-v${{ env.TVER }}.exe

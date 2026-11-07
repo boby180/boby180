@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 AXES = "XYZW"
-TUNING_KEYS = ["KP", "KI", "KD", "IS", "ER", "TL", "FF[1]", "FF[2]", "CG"]
+TUNING_KEYS = ["KP", "KI", "KD", "IS", "ER", "TL", "FF[1]", "FF[2]", "AG", "AF", "CG"]
 # CG bit 3 (zero based) selects the control scheme (Users Manual chapter 6); set = PID, clear = PIV.
 CG_PID_BIT = 3
 

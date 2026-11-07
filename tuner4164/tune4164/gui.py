@@ -9,17 +9,15 @@ from pathlib import Path
 import numpy as np
 import pyqtgraph as pg
 from PySide6.QtCore import QSettings, Qt
-from PySide6.QtGui import QFont
+from PySide6.QtGui import QColor, QPalette
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QFileDialog, QFormLayout, QGroupBox, QHBoxLayout, QHeaderView, QLabel,
     QMainWindow, QPushButton, QSpinBox, QSplitter, QTableWidget, QTableWidgetItem, QTextBrowser, QVBoxLayout,
     QWidget,
 )
 
-from ctrl4164.gui import light_palette
-
 from .advise import TESTS, Advice, advise
-from .analysis import Analysis, command_metrics, move_metrics, step_metrics
+from .analysis import Analysis, command_metrics, move_metrics, step_metrics, tacho_metrics
 from .prm import AXES, TUNING_KEYS, PrmFile, load_prm, prm_text
 from .recording import SAMPLE_TIME_4M, Recording, load_recording
 from .version import __version__
@@ -27,7 +25,8 @@ from .version import __version__
 NONE = "—"
 LRM = "‎"
 ROLE_LABELS = [("time", "זמן"), ("reference", "רצוי (Desired)"), ("actual", "בפועל (Position/Velocity)"),
-               ("error", "שגיאת מיקום (PE)"), ("command", "פקודת דרייבר")]
+               ("error", "שגיאת מיקום (PE)"), ("command", "פקודת דרייבר"),
+               ("velocity", "מהירות מהאנקודר"), ("tacho", "חיישן מהירות / כניסה אנלוגית")]
 SAFETY = ("ההמלצות מבוססות על ההקלטה בלבד, ולא מחליפות שיקול דעת. משנים פרמטר אחד בכל פעם, "
           "בודקים במהירות נמוכה עם יד על לחצן החירום, ושומרים בבקר (SV) רק כשמרוצים.")
 
@@ -37,7 +36,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle(f"כיול 4164  ·  גרסה {__version__}")
         self.setLayoutDirection(Qt.RightToLeft)
-        self.prefs = QSettings("ctrl4164", "Tuner4164")
+        self.prefs = QSettings("Tuner4164", "Tuner4164")
         self.prm = PrmFile()
         self.rec: Recording | None = None
         self.advice: Advice | None = None
@@ -80,7 +79,7 @@ class MainWindow(QMainWindow):
         self.table = QTableWidget(len(AXES), len(TUNING_KEYS) + 1)
         self.table.setHorizontalHeaderLabels(TUNING_KEYS + ["מבנה"])
         self.table.setVerticalHeaderLabels(list(AXES))
-        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
         self.table.setLayoutDirection(Qt.LeftToRight)
         self.table.setFixedHeight(self.table.verticalHeader().defaultSectionSize() * 5 + 8)
         bl.addWidget(self.table)
@@ -209,6 +208,9 @@ class MainWindow(QMainWindow):
             idx = self.rec.time_column if role == "time" else self.rec.guess(role)
             combo.setCurrentIndex(0 if idx is None else idx + 1)
             combo.blockSignals(False)
+        roles = {r: self.rec.guess(r) for r in ("reference", "error", "velocity", "tacho")}
+        if roles["tacho"] is not None and roles["reference"] is None and roles["error"] is None:
+            self.test.setCurrentIndex(self.test.findData("tacho"))  # a sensor-vs-encoder recording
         notes = "".join(f"<li>{html.escape(n)}</li>" for n in self.rec.notes)
         self.result.setHtml(f"<p>נטענו {len(self.rec.time)} דגימות, {len(self.rec.names)} עמודות, "
                             f"{self.rec.time[-1]:.3f} שניות.</p><ul>{notes}</ul>"
@@ -261,7 +263,14 @@ class MainWindow(QMainWindow):
         test = self.test.currentData()
         an = Analysis()
         gains = self._gains()
-        if test == "velocity_step":
+        vel, tacho = self._col("velocity"), self._col("tacho")
+        if test == "tacho":
+            if vel is None and act is not None:
+                vel = np.gradient(act, t) / 1000.0
+                an.warnings.append("אין עמודת מהירות. המהירות חושבה מהמיקום (ביחידות לכל ms).")
+            if vel is not None and tacho is not None:
+                an.tacho = tacho_metrics(vel, tacho)
+        elif test == "velocity_step":
             if self.derive.isChecked():
                 dt = np.gradient(t)
                 dt[dt == 0] = 1e-6
@@ -284,16 +293,23 @@ class MainWindow(QMainWindow):
         if cmd is not None:
             an.command = command_metrics(cmd, gains.get("TL") or None)
         self.advice = advise(self.mode.currentText(), test, gains, an)
-        self._plot(t, ref, act, pe, cmd, test)
+        self._plot(t, ref, act, pe, cmd, test, vel, tacho)
         self._show_advice()
 
     def _plot_raw(self) -> None:
         self.analyze() if self.rec is not None and self._col("actual") is not None else None
 
-    def _plot(self, t, ref, act, pe, cmd, test) -> None:
+    def _plot(self, t, ref, act, pe, cmd, test, vel=None, tacho=None) -> None:
         self.plot.clear()
         self.plot2.clear()
         self.plot.addLegend()
+        if test == "tacho" and vel is not None and tacho is not None:
+            self.plot.plot(t, vel, pen=pg.mkPen("#1f6fb3", width=1.5), name="מהירות מהאנקודר")
+            self.plot.plot(t, tacho, pen=pg.mkPen("#e08a00", width=1), name="חיישן מהירות")
+            k, c = np.polyfit(vel, tacho, 1)
+            self.plot2.plot(t, tacho - (k * vel + c), pen=pg.mkPen("#c62f2f", width=1))
+            self.plot2.setTitle("ההפרש בין החיישן לאנקודר (אחרי התאמה)")
+            return
         if test == "move" and pe is not None:
             self.plot.plot(t, pe, pen=pg.mkPen("#c62f2f", width=1.5), name="שגיאת מיקום")
         else:
@@ -356,6 +372,19 @@ class MainWindow(QMainWindow):
         note = f"{axis}{p.param}: {p.old} -> {p.new} ({p.percent:+d}%)"
         path.write_bytes(prm_text({(axis, p.param): p.new}, note).encode("ascii"))
         self.statusBar().showMessage(f"נשמר: {path}", 6000)
+
+
+def light_palette() -> QPalette:
+    """Fixed light colours, so Windows dark mode does not turn the text white on light panels."""
+    pal = QPalette()
+    for role, color in {
+        QPalette.Window: "#e9edf1", QPalette.WindowText: "#1c2530", QPalette.Base: "#ffffff",
+        QPalette.AlternateBase: "#f2f4f7", QPalette.Text: "#1c2530", QPalette.Button: "#f7f9fb",
+        QPalette.ButtonText: "#1c2530", QPalette.Highlight: "#2f6fb3", QPalette.HighlightedText: "#ffffff",
+        QPalette.ToolTipBase: "#ffffff", QPalette.ToolTipText: "#1c2530", QPalette.PlaceholderText: "#7a8794",
+    }.items():
+        pal.setColor(role, QColor(color))
+    return pal
 
 
 def main() -> None:
