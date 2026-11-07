@@ -154,7 +154,7 @@ class MainWindow(QMainWindow):
         row.addStretch(1)
         rl.addLayout(row)
         lay.addWidget(res, 2)
-        self.result.setHtml("<p>1. פתח קובץ PRM.  2. פתח הקלטה (CSV/TXT).  3. בחר ציר, סוג בדיקה ועמודות.  "
+        self.result.setHtml("<p>1. פתח קובץ PRM.  2. פתח הקלטה (SDV, או CSV/TXT).  3. בחר ציר, סוג בדיקה ועמודות.  "
                             "4. לחץ <b>נתח והמלץ</b>.</p>")
         return w
 
@@ -188,6 +188,8 @@ class MainWindow(QMainWindow):
 
     def open_recording(self) -> None:
         name, _ = QFileDialog.getOpenFileName(self, "פתיחת הקלטה", self._dir(),
+                                              "הקלטות SC-Shell (*.sdv *.SDV);;"
+                                              "כל ההקלטות (*.sdv *.SDV *.csv *.txt *.tsv *.dat);;"
                                               "הקלטות טקסט (*.csv *.txt *.tsv *.dat);;כל הקבצים (*)")
         if name:
             self.load_recording_file(name)
