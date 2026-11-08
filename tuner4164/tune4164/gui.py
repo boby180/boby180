@@ -12,7 +12,7 @@ from PySide6.QtCore import QSettings, Qt
 from PySide6.QtGui import QColor, QPalette
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QFileDialog, QFormLayout, QGroupBox, QHBoxLayout, QHeaderView, QLabel,
-    QDialog, QDialogButtonBox, QMainWindow, QPushButton, QSpinBox, QSplitter, QTableWidget, QTableWidgetItem, QTextBrowser, QVBoxLayout,
+    QDialog, QDialogButtonBox, QMainWindow, QPushButton, QTabWidget, QSpinBox, QSplitter, QTableWidget, QTableWidgetItem, QTextBrowser, QVBoxLayout,
     QWidget,
 )
 
@@ -26,12 +26,13 @@ NONE = "—"
 LRM = "‎"
 ROLE_LABELS = [("time", "זמן"), ("reference", "רצוי (Desired)"), ("actual", "בפועל (Position/Velocity)"),
                ("error", "שגיאת מיקום (PE)"), ("command", "פקודת דרייבר"),
-               ("velocity", "מהירות מהאנקודר"), ("tacho", "חיישן מהירות / כניסה אנלוגית")]
+               ("velocity", "מהירות מהאנקודר"), ("velocity_ref", "מהירות רצויה"),
+               ("tacho", "חיישן מהירות / כניסה אנלוגית")]
 GUIDE_SHORT = (
     "<b>איזו הקלטה לעשות ב-SC-Shell כדי לקבל המלצות ל-KP / KI / KD:</b> "
     "בתיקיית Data Recording בוחרים לאותו ציר: "
     "<b>RV[1] = Position Error</b>, <b>RV[2] = Desired Position</b>, <b>RV[3] = Position</b>, "
-    "<b>RV[4] = Driver Command</b>. "
+    "<b>RV[4] = Driver Command</b>, <b>RV[5] = Analog Input</b> (חיישן המהירות, נבדק ראשון). "
     "מקליטים <b>תנועה רגילה</b> ו<b>תנועה קטנה (0.5°-1°)</b>, וממשיכים להקליט <b>כשנייה אחרי שהציר עוצר</b>. "
     "שומרים כקובץ SDV ופותחים כאן."
 )
@@ -46,7 +47,7 @@ GUIDE_FULL = """
 <tr><td>RV[2]</td><td><b>Desired Position</b></td><td>מה הבקר ביקש, מתי התנועה מתחילה ונגמרת</td></tr>
 <tr><td>RV[3]</td><td><b>Position</b></td><td>מה הציר עשה בפועל</td></tr>
 <tr><td>RV[4]</td><td><b>Driver Command</b></td><td>הפקודה למנוע: רוויה ורעש (למשל KD גבוה מדי)</td></tr>
-<tr><td>RV[5]</td><td>Analog Input (לא חובה)</td><td>חיישן המהירות, לבדיקת ה-Tacho</td></tr>
+<tr><td>RV[5]</td><td><b>Analog Input</b></td><td>חיישן המהירות (Tacho). נבדק ראשון: לולאת המהירות עובדת לפיו</td></tr>
 </table>
 <h4>2. אילו תנועות להקליט</h4>
 <ul>
@@ -148,7 +149,7 @@ class MainWindow(QMainWindow):
         self.test = QComboBox()
         for key, label in TESTS.items():
             self.test.addItem(label, key)
-        self.test.setCurrentIndex(1)
+        self.test.setCurrentIndex(0)  # full test
         form.addRow("ציר:", self.axis)
         form.addRow("מבנה בקרה:", self.mode)
         form.addRow("סוג הבדיקה:", self.test)
@@ -185,8 +186,17 @@ class MainWindow(QMainWindow):
         self.plot2.setXLink(self.plot)
         for p in (self.plot, self.plot2):
             p.setLayoutDirection(Qt.LeftToRight)
-        lay.addWidget(self.plot, 3)
-        lay.addWidget(self.plot2, 2)
+        analysis = QWidget()
+        al = QVBoxLayout(analysis)
+        al.setContentsMargins(0, 0, 0, 0)
+        al.addWidget(self.plot, 3)
+        al.addWidget(self.plot2, 2)
+        self.all_plots = pg.GraphicsLayoutWidget()
+        self.all_plots.setLayoutDirection(Qt.LeftToRight)
+        self.tabs = QTabWidget()
+        self.tabs.addTab(analysis, "ניתוח")
+        self.tabs.addTab(self.all_plots, "כל הערוצים בהקלטה")
+        lay.addWidget(self.tabs, 5)
         res = QGroupBox("ממצאים והמלצה")
         rl = QVBoxLayout(res)
         self.result = QTextBrowser()
@@ -262,11 +272,14 @@ class MainWindow(QMainWindow):
         roles = {r: self.rec.guess(r) for r in ("reference", "error", "velocity", "tacho")}
         if roles["tacho"] is not None and roles["reference"] is None and roles["error"] is None:
             self.test.setCurrentIndex(self.test.findData("tacho"))  # a sensor-vs-encoder recording
+        else:
+            self.test.setCurrentIndex(self.test.findData("full"))
         notes = "".join(f"<li>{html.escape(n)}</li>" for n in self.rec.notes)
         self.result.setHtml(f"<p>נטענו {len(self.rec.time)} דגימות, {len(self.rec.names)} עמודות, "
                             f"{self.rec.time[-1]:.3f} שניות.</p><ul>{notes}</ul>"
                             "<p>בדוק שהעמודות שנבחרו נכונות ולחץ <b>נתח והמלץ</b>.</p>")
         self._show_files()
+        self._plot_all()
         self._plot_raw()
 
     def _show_files(self) -> None:
@@ -303,7 +316,8 @@ class MainWindow(QMainWindow):
         if t is None:
             return np.arange(len(self.rec.time)) * self.rg.value() * SAMPLE_TIME_4M
         t = t - t[0]
-        return t / 1000.0 if t[-1] > 1000 else t
+        name = self.cols["time"].currentText().lower()
+        return t / 1000.0 if "ms" in name else t
 
     def analyze(self) -> None:
         if self.rec is None:
@@ -314,11 +328,24 @@ class MainWindow(QMainWindow):
         test = self.test.currentData()
         an = Analysis()
         gains = self._gains()
-        vel, tacho = self._col("velocity"), self._col("tacho")
+        vel, tacho, vref = self._col("velocity"), self._col("tacho"), self._col("velocity_ref")
+        if test in ("full", "move"):
+            if pe is None and ref is not None and act is not None:
+                pe = ref - act
+                an.warnings.append("אין עמודת שגיאת מיקום. השגיאה חושבה כרצוי פחות בפועל.")
+            moving = None
+            if vref is not None:
+                moving = np.abs(vref) > 1e-6 * (np.max(np.abs(vref)) + 1)
+            elif ref is not None:
+                moving = np.abs(np.gradient(ref)) > 1e-9
+            if pe is not None:
+                an.move = move_metrics(t, pe, moving, vref=vref)
+        if test == "full" and vel is not None and tacho is not None:
+            an.tacho = tacho_metrics(vel, tacho)
         if test == "tacho":
             if vel is None and act is not None:
-                vel = np.gradient(act, t) / 1000.0
-                an.warnings.append("אין עמודת מהירות. המהירות חושבה מהמיקום (ביחידות לכל ms).")
+                vel = np.gradient(act, t)
+                an.warnings.append("אין עמודת מהירות. המהירות חושבה מהמיקום (ספירות לשנייה).")
             if vel is not None and tacho is not None:
                 an.tacho = tacho_metrics(vel, tacho)
         elif test == "velocity_step":
@@ -332,20 +359,28 @@ class MainWindow(QMainWindow):
         elif test == "position_step":
             if act is not None:
                 an.step = step_metrics(t, act, ref)
-        else:
-            if pe is None and ref is not None and act is not None:
-                pe = ref - act
-                an.warnings.append("אין עמודת שגיאת מיקום. השגיאה חושבה כרצוי פחות בפועל.")
-            if pe is not None:
-                moving = None
-                if ref is not None:
-                    moving = np.abs(np.gradient(ref)) > 1e-9
-                an.move = move_metrics(t, pe, moving)
         if cmd is not None:
             an.command = command_metrics(cmd, gains.get("TL") or None)
         self.advice = advise(self.mode.currentText(), test, gains, an)
         self._plot(t, ref, act, pe, cmd, test, vel, tacho)
         self._show_advice()
+
+    def _plot_all(self) -> None:
+        """Every recorded vector in its own strip, like the Data Viewer."""
+        self.all_plots.clear()
+        first = p = None
+        rows = [i for i in range(len(self.rec.names)) if i != self.rec.time_column]
+        for row, i in enumerate(rows):
+            p = self.all_plots.addPlot(row=row, col=0)
+            p.plot(self.rec.time, self.rec.data[:, i], pen=pg.mkPen(pg.intColor(row, len(rows) + 1), width=1))
+            p.setLabel("left", self.rec.names[i])
+            p.showGrid(x=True, y=True, alpha=0.2)
+            if first is None:
+                first = p
+            else:
+                p.setXLink(first)
+        if p is not None:
+            p.setLabel("bottom", "זמן [s]")
 
     def _plot_raw(self) -> None:
         self.analyze() if self.rec is not None and self._col("actual") is not None else None
@@ -354,6 +389,18 @@ class MainWindow(QMainWindow):
         self.plot.clear()
         self.plot2.clear()
         self.plot.addLegend()
+        if test == "full":
+            if vel is not None:
+                self.plot.plot(t, vel, pen=pg.mkPen("#1f6fb3", width=1.5), name="מהירות מהאנקודר")
+            if tacho is not None:
+                self.plot.plot(t, tacho, pen=pg.mkPen("#e08a00", width=1), name="חיישן מהירות")
+            if vel is None and act is not None:
+                self.plot.plot(t, act, pen=pg.mkPen("#e08a00", width=1.5), name="מיקום")
+            self.plot.setTitle("שלב 1: חיישן מהירות מול אנקודר")
+            if pe is not None:
+                self.plot2.plot(t, pe, pen=pg.mkPen("#c62f2f", width=1))
+                self.plot2.setTitle("שלב 2: שגיאת מיקום")
+            return
         if test == "tacho" and vel is not None and tacho is not None:
             self.plot.plot(t, vel, pen=pg.mkPen("#1f6fb3", width=1.5), name="מהירות מהאנקודר")
             self.plot.plot(t, tacho, pen=pg.mkPen("#e08a00", width=1), name="חיישן מהירות")
@@ -419,12 +466,12 @@ class MainWindow(QMainWindow):
             parts.append("<p style='color:#c62f2f'><b>אין המלצה לשינוי מההקלטה הזו.</b></p>")
         elif a.primary:
             p = a.primary
-            new = "?" if p.new is None else str(p.new)
-            old = "?" if p.old is None else str(p.old)
+            new = "?" if p.new is None else f"{LRM}{p.new}{LRM}"   # keep "-19126" from turning into "19126-"
+            old = "?" if p.old is None else f"{LRM}{p.old}{LRM}"
             parts.append(
                 f"<div style='background:#e8f4ec; border:1px solid #1f9d55; padding:8px;'>"
                 f"<p style='font-size:13pt'><b>השינוי המומלץ עכשיו: {axis}{p.param} מ-{old} ל-{new} "
-                f"({'+' if p.percent > 0 else ''}{p.percent}%)</b></p>"
+                f"({LRM}{'+' if p.percent > 0 else ''}{p.percent}%{LRM})</b></p>"
                 f"<p>{html.escape(p.reason)}</p>"
                 f"<p>בקונסולה של תוכנת הבקר: <code>{LRM}{axis}{p.param}={new}</code>, ואז להקליט שוב באותה בדיקה.</p></div>")
             if len(a.changes) > 1:

@@ -3,7 +3,8 @@
 .sdv layout (read from a real file, not documented): for each vector a 16-byte header
 <u32 0, u32 1, u32 samples, u32 0>, <u32 name length>, the NUL-terminated name, then
 'samples' little-endian float64 values. The vectors are followed by text viewer properties
-("PropMotionRecorder ..."). The Shell appends a "Time" vector in milliseconds.
+("PropMotionRecorder ..."). The Shell appends a "Time" vector in seconds (checked against
+RG x 61.035 us and against its own d(Pos)/dt "Veldt" vector).
 
 Text files: one column per vector and an optional header line. Without a time column samples
 are spaced by RG x the servo sample time (61.035 us on the SC-AT-4M / NT-4M).
@@ -23,6 +24,7 @@ SAMPLE_TIME_4M = 1 / 16384  # 61.035 us: 65536 samples = 4 s (Users Manual)
 _NUM = re.compile(r"^[-+]?(\d+\.?\d*|\.\d+)([eE][-+]?\d+)?$")
 
 ROLES = {
+    "velocity_ref": ("vref", "refvel", "desvel"),
     "tacho": ("anlginp", "analog", "tacho", "ai"),
     "time": ("time", "זמן", "sec", "[s]"),
     "reference": ("desired", "dp", "reference", "command pos", "ref", "רצוי"),
@@ -63,8 +65,9 @@ def _role_of(name: str) -> str | None:
     checks = [
         ("time", lambda: "time" in joined or "זמן" in joined),
         ("error", lambda: "err" in joined or joined in ("pe",) or "שגיאה" in joined),
+        ("velocity_ref", lambda: any(k in joined for k in ("vref", "refvel", "desvel", "desiredvel"))),
         ("reference", lambda: any(k in joined for k in ("desired", "despos", "reference", "רצוי")) or joined == "dp"),
-        ("command", lambda: any(k in joined for k in ("command", "driver", "drvcmd", "dac", "פקודה"))
+        ("command", lambda: any(k in joined for k in ("command", "driver", "drvcmd", "drvcom", "drv", "dac", "פקודה"))
          or joined in ("po", "cmd")),
         ("tacho", lambda: any(k in joined for k in ("anlg", "analog", "tacho")) or joined == "ai"),
         ("velocity", lambda: any(k in joined for k in ("vel", "speed", "מהירות")) or joined == "vl"),
@@ -119,7 +122,7 @@ def parse_recording(text: str, path: Path | None = None, dt: float | None = None
             tcol = 0  # an evenly increasing first column is the time vector
     if tcol is not None:
         t = data[:, tcol].copy()
-        if t[-1] - t[0] > 1000:      # milliseconds or samples rather than seconds
+        if "ms" in names[tcol].lower():  # a time column labelled in milliseconds
             rec.notes.append("עמודת הזמן נראית במילישניות. הומרה לשניות")
             t = t / 1000.0
         rec.time, rec.time_column = t - t[0], tcol
@@ -150,7 +153,7 @@ def parse_sdv(raw: bytes, path: Path | None = None, dt: float | None = None) -> 
     rec = Recording(path, names, data, np.arange(n, dtype=float))
     tcol = next((i for i, nm in enumerate(names) if nm.lower() == "time"), None)
     if tcol is not None:
-        rec.time, rec.time_column = (data[:, tcol] - data[0, tcol]) / 1000.0, tcol  # Shell time vector is in ms
+        rec.time, rec.time_column = data[:, tcol] - data[0, tcol], tcol  # Shell time vector is in seconds
     else:
         step = dt if dt else SAMPLE_TIME_4M
         rec.time = np.arange(n) * step

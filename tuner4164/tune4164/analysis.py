@@ -27,12 +27,19 @@ class StepMetrics:
 
 @dataclass
 class MoveMetrics:
-    max_error: float = 0.0               # largest |PE| during the move [counts]
-    end_error_peak: float = 0.0          # largest |PE| after the motion ends
-    residual_freq: float | None = None   # Hz of the oscillation after the end
+    max_error: float = 0.0               # largest |PE| in the recording [counts]
+    following_pos: float | None = None   # mean PE while cruising in + direction
+    following_neg: float | None = None   # mean PE while cruising in - direction
+    cruise_ripple: float | None = None   # PE spread while cruising
+    stop_time: float | None = None       # time of the stop that was judged [s]
+    end_error_peak: float = 0.0          # largest |PE| after that stop
+    residual_freq: float | None = None   # Hz of the oscillation after the stop
+    oscillations: int = 0
     settle_after_end: float | None = None
-    final_error: float = 0.0
-    sustained: bool = False              # still oscillating at the end of the recording
+    final_error: float = 0.0             # PE at the end of the standstill
+    tolerance: float = 0.0
+    sustained: bool = False              # still oscillating at the end of the standstill
+    has_stop: bool = False
     ok: bool = False
     note: str = ""
 
@@ -139,9 +146,12 @@ def step_metrics(t: np.ndarray, y: np.ndarray, ref: np.ndarray | None = None, ba
 
 
 def move_metrics(t: np.ndarray, pe: np.ndarray, moving: np.ndarray | None = None,
-                 tolerance: float | None = None) -> MoveMetrics:
-    """Point-to-point move judged from the position error. 'moving' marks motion samples if known
-    (from a reference/desired-position column); otherwise the end is taken where |PE| peaks last."""
+                 tolerance: float | None = None, vref: np.ndarray | None = None) -> MoveMetrics:
+    """Point-to-point motion judged from the position error.
+
+    'moving' marks samples where the desired position changes (from the desired position or
+    desired velocity). Cruise = moving at (near) the top desired speed. The stop judged is the
+    one followed by the longest standstill (at least 0.2 s)."""
     m = MoveMetrics()
     n = len(pe)
     if n < 20:
@@ -149,28 +159,53 @@ def move_metrics(t: np.ndarray, pe: np.ndarray, moving: np.ndarray | None = None
         return m
     a = np.abs(pe)
     m.max_error = float(np.max(a))
-    if moving is not None and np.any(moving):
-        i_end = int(np.where(moving)[0][-1]) + 1
-    else:
-        i_end = int(np.argmax(a))
-    i_end = min(i_end, n - 5)
-    after_t, after = t[i_end:] - t[i_end], pe[i_end:]
-    tail = max(5, n // 10)
-    noise = float(np.std(pe[-tail:]))
-    tol = tolerance if tolerance else max(3.0 * noise, 0.02 * m.max_error, 2.0)
+    if moving is None:
+        moving = np.zeros(n, dtype=bool)
+        moving[: int(np.argmax(a)) + 1] = True
+    moving = moving.astype(bool)
+    still = ~moving
+    noise = float(np.std(pe[still][-max(5, int(still.sum()) // 4):])) if still.sum() > 10 else float(np.std(pe[-n // 10:]))
+    m.tolerance = tol = tolerance if tolerance else max(5.0, 3.0 * noise)
+    if vref is not None and np.any(moving):
+        top = np.max(np.abs(vref[moving]))
+        cruise = moving & (np.abs(np.abs(vref) - top) <= 0.02 * top)
+        if np.any(cruise & (vref > 0)):
+            m.following_pos = float(np.mean(pe[cruise & (vref > 0)]))
+        if np.any(cruise & (vref < 0)):
+            m.following_neg = float(np.mean(pe[cruise & (vref < 0)]))
+        if np.any(cruise):
+            m.cruise_ripple = float(np.std(pe[cruise] - np.where(vref[cruise] > 0, m.following_pos or 0, m.following_neg or 0)))
+    # standstill segments after a motion
+    best = None
+    edges = np.flatnonzero(np.diff(moving.astype(int)))
+    for e in edges:
+        if moving[e] and not moving[e + 1]:                      # motion -> standstill
+            j = e + 1
+            nxt = np.flatnonzero(moving[j:])
+            k = j + (int(nxt[0]) if len(nxt) else n - j)
+            if t[k - 1] - t[j] >= 0.2 and (best is None or k - j > best[1] - best[0]):
+                best = (j, k)
+    m.ok = True
+    if best is None:
+        m.note = "בהקלטה אין עצירה עם לפחות 0.2 שניות אחריה, ולכן אי אפשר לבדוק התייצבות"
+        return m
+    j, k = best
+    m.has_stop = True
+    m.stop_time = float(t[j])
+    after_t, after = t[j:k] - t[j], pe[j:k]
+    tail = max(5, len(after) // 5)
+    m.final_error = float(np.mean(after[-tail:]))
     m.end_error_peak = float(np.max(np.abs(after)))
-    m.final_error = float(np.mean(pe[-tail:]))
-    outside = np.where(np.abs(after) > tol)[0]
+    outside = np.flatnonzero(np.abs(after - m.final_error) > tol)
     if len(outside) == 0:
         m.settle_after_end = 0.0
-    elif outside[-1] < len(after) - tail // 2:
+    elif outside[-1] < len(after) - tail:
         m.settle_after_end = float(after_t[outside[-1] + 1])
-    else:
-        m.sustained = True
-    cr = _crossings(after_t, after, float(np.mean(after[-tail:])), tol / 2)
+    cr = _crossings(after_t, after, m.final_error, tol / 2)
+    m.oscillations = len(cr)
     if len(cr) >= 3:
         m.residual_freq = float(1.0 / (2 * np.mean(np.diff(cr))))
-    m.ok = True
+        m.sustained = cr[-1] > after_t[-1] * 0.8
     return m
 
 

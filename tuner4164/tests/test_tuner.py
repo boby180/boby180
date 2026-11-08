@@ -122,15 +122,16 @@ def _sdv_bytes(vectors):
     return out + b"\x33\x00\x00\x00\x78\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00PropMotionRecorder\r\n..."
 
 
-def test_sdv_file_is_read_with_time_in_ms(tmp_path):
+def test_sdv_file_is_read_with_time_in_seconds(tmp_path):
+    # The Shell's Time vector is in seconds: RG=64 gives 64 x 61.035us = 3.906 ms per sample.
     n = 500
-    t_ms = np.arange(n) * 0.30515
+    t_ms = np.arange(n) * 0.0039059
     pos = 1000 * np.sin(t_ms / 50)
     p = tmp_path / "rec.sdv"
     p.write_bytes(_sdv_bytes([("YPos", pos), ("YAnlgInp", pos * 0.5), ("YVeldt", np.gradient(pos)), ("Time", t_ms)]))
     rec = load_recording(p)
     assert rec.names == ["YPos", "YAnlgInp", "YVeldt", "Time"] and rec.data.shape == (n, 4)
-    assert rec.time_column == 3 and abs(rec.time[1] - 0.00030515) < 1e-12
+    assert rec.time_column == 3 and abs(rec.time[1] - 0.0039059) < 1e-12
     assert rec.guess("actual") == 0 and rec.guess("tacho") == 1 and rec.guess("velocity") == 2
 
 
@@ -151,3 +152,33 @@ def test_tacho_within_2_percent_needs_no_change():
     vel = 12000 * np.sin(2 * np.pi * 1.5 * t)
     adv = advise("PIV", "tacho", {"AG": -48388, "AF": 11}, Analysis(tacho=tacho_metrics(vel, 1.0024 * vel - 4)))
     assert adv.status == "ok" and not adv.changes
+
+
+
+def _full_recording(tacho_gain, settle_tau):
+    """Down at constant speed, stop for 3 s (PE decays with settle_tau and a small offset), up again."""
+    t = np.arange(0, 30, 0.004)
+    vref = np.where(t < 12, -6400.0, np.where(t < 15, 0.0, 6400.0))
+    pe = np.where(t < 12, -140.0, np.where(t < 15, 40 * np.exp(-(t - 12) / settle_tau) - 16, 115.0))
+    vel = vref + np.random.default_rng(2).normal(0, 30, len(t))
+    return t, vref, pe, vel, tacho_gain * vel
+
+
+def test_full_test_fixes_the_speed_sensor_first():
+    from tune4164.analysis import tacho_metrics
+    t, vref, pe, vel, tacho = _full_recording(0.90, 0.25)
+    an = Analysis(tacho=tacho_metrics(vel, tacho), move=move_metrics(t, pe, np.abs(vref) > 0, vref=vref))
+    adv = advise("PIV", "full", {"KP": 20, "KI": 50, "KD": 8000, "AG": -17240, "AF": 11}, an)
+    assert [c.param for c in adv.changes] == ["AG"]                 # loop changes wait for the sensor fix
+    assert any("אחרי תיקון החיישן" in f for f in adv.findings)
+    assert abs(an.move.following_neg + 140) < 1 and abs(an.move.following_pos - 115) < 1
+    assert abs(an.move.final_error + 16) < 2
+
+
+def test_full_test_with_good_sensor_tunes_the_loop():
+    from tune4164.analysis import tacho_metrics
+    t, vref, pe, vel, tacho = _full_recording(1.0, 0.25)
+    an = Analysis(tacho=tacho_metrics(vel, tacho), move=move_metrics(t, pe, np.abs(vref) > 0, vref=vref))
+    adv = advise("PIV", "full", {"KP": 20, "KI": 50, "KD": 8000, "AG": -17240, "AF": 11}, an)
+    params = [c.param for c in adv.changes]
+    assert "AG" not in params and params[0] == "KP" and "KI" in params

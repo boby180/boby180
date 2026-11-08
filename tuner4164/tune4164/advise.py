@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from .analysis import Analysis
 
 TESTS = {
+    "full": "בדיקה מלאה: חיישן מהירות ואז הלולאה (מומלץ)",
     "tacho": "השוואת חיישן מהירות (Tacho) לאנקודר",
     "velocity_step": "צעד מהירות (KP=0)",
     "position_step": "צעד מיקום קטן",
@@ -64,6 +65,9 @@ def advise(mode: str, test: str, gains: dict[str, int | None], an: Analysis) -> 
     adv = Advice(warnings=list(an.warnings))
     g = lambda k: gains.get(k)  # noqa: E731
     add = lambda p, f, why: adv.changes.append(Change(p, g(p), f, why))  # noqa: E731
+
+    if test == "full":
+        return _full(mode, gains, an, adv)
 
     cmd = an.command
     if cmd and cmd.ok:
@@ -171,21 +175,96 @@ def advise(mode: str, test: str, gains: dict[str, int | None], an: Analysis) -> 
             adv.findings.append(mv.note if mv else "לא נבחרה עמודת שגיאת מיקום (PE)")
             adv.status = "stop"
             return adv
-        adv.findings.append(
-            f"שגיאת מיקום: מקסימום {mv.max_error:.0f} בזמן התנועה, {mv.end_error_peak:.0f} אחרי סוף התנועה, "
-            f"סופית {mv.final_error:.1f}" + (f", תנודה {mv.residual_freq:.1f}Hz" if mv.residual_freq else "")
-            + (f", התייצבות {mv.settle_after_end * 1000:.0f}ms" if mv.settle_after_end is not None else ""))
-        if mv.sustained:
-            add("KP", 0.7, "הציר ממשיך להתנדנד עד סוף ההקלטה. מתחילים בהורדת KP.")
-        elif mv.residual_freq and mv.end_error_peak > 0.2 * mv.max_error:
-            add("KP", 0.8, "יש תנודה אחרי סוף התנועה: KP גבוה מדי (לולאת מיקום מהירה מדי).")
-        elif mv.settle_after_end is not None and mv.settle_after_end > 0.3:
-            add("KP", 1.2, "הציר מתייצב לאט אחרי סוף התנועה ובלי תנודה: יש מקום להעלות KP.")
-        if mv.max_error > 0 and abs(mv.final_error) > max(2.0, 0.05 * mv.max_error):
-            add("KI", 1.25, "נשארת שגיאת מיקום בסוף: מעלים KI.")
+        _move_advice(mv, adv, add)
         if not adv.changes:
             adv.findings.append("התנועה נראית טובה. אין צורך לשנות.")
 
     if adv.changes and adv.status != "stop":
         adv.status = "change"
+    return adv
+
+
+def _move_advice(mv, adv: Advice, add) -> None:
+    fol = [abs(x) for x in (mv.following_pos, mv.following_neg) if x is not None]
+    if fol:
+        adv.findings.append(f"פיגור בזמן נסיעה במהירות קבועה: {max(fol):.0f} ספירות"
+                            + (f", אדוות ±{mv.cruise_ripple:.0f}" if mv.cruise_ripple is not None else ""))
+    if not mv.has_stop:
+        adv.findings.append(mv.note)
+        return
+    adv.findings.append(
+        f"אחרי העצירה ב-{mv.stop_time:.2f}s: שיא שגיאה {mv.end_error_peak:.0f}, "
+        + (f"התייצבות תוך {mv.settle_after_end * 1000:.0f}ms" if mv.settle_after_end is not None else "לא התייצב")
+        + f", שגיאה סופית {mv.final_error:.0f} (סף {mv.tolerance:.0f})"
+        + (f", תנודה {mv.residual_freq:.1f}Hz" if mv.residual_freq else ""))
+    if mv.sustained:
+        add("KP", 0.7, "הציר ממשיך להתנדנד עד סוף העמידה. מתחילים בהורדת KP.")
+    elif mv.oscillations >= 3:
+        add("KP", 0.8, "יש תנודה אחרי העצירה: KP גבוה מדי (לולאת מיקום מהירה מדי).")
+    elif mv.settle_after_end is not None and mv.settle_after_end > 0.3:
+        add("KP", 1.2, f"הציר מתייצב לאט ({mv.settle_after_end * 1000:.0f}ms) ובלי תנודה: יש מקום להעלות KP.")
+    if abs(mv.final_error) > 2 * mv.tolerance:
+        add("KI", 1.25, f"נשארת שגיאת מיקום של {mv.final_error:.0f} ספירות בעמידה: מעלים KI.")
+
+
+def _full(mode: str, gains: dict, an: Analysis, adv: Advice) -> Advice:
+    """Speed sensor first (the velocity loop runs on it), then the position loop."""
+    g = lambda k: gains.get(k)  # noqa: E731
+    add = lambda p, f, why: adv.changes.append(Change(p, g(p), f, why))  # noqa: E731
+    sensor_bad = False
+    adv.findings.append("שלב 1: חיישן המהירות מול האנקודר")
+    tm = an.tacho
+    if tm and tm.ok:
+        adv.findings.append(f"חיישן המהירות = {tm.gain:.4f} × מהירות האנקודר {tm.offset:+.0f}  "
+                            f"(התאמה {tm.correlation:.5f}, סטייה {tm.residual_pct:.2f}%)")
+        if tm.gain < 0:
+            adv.findings.append("הסימן של החיישן הפוך לאנקודר: צריך להפוך את סימן AG או את החיווט.")
+            sensor_bad = True
+        err = abs(abs(tm.gain) - 1.0)
+        if err > 0.02:
+            sensor_bad = True
+            if g("AG") is not None:
+                add("AG", 1.0 / abs(tm.gain),
+                    f"החיישן קורא {abs(tm.gain) * 100:.1f}% ממהירות האנקודר. לפי המדריך (סעיף 3.2) הם צריכים להיות "
+                    f"שווים. ההגבר הוא AG×2^-AF" + (f" (AF={g('AF')})" if g("AF") is not None else "") + ".")
+            else:
+                adv.findings.append("כדי לחשב AG חדש טען את קובץ ה-PRM.")
+        else:
+            adv.findings.append(f"החיישן מכויל טוב (הפרש {err * 100:.2f}%).")
+        if tm.correlation < 0.99:
+            adv.findings.append("ההתאמה בין החיישן לאנקודר חלשה: בדוק חיווט, הארקה ורעש.")
+            sensor_bad = True
+    else:
+        adv.findings.append("אין בהקלטה כניסה אנלוגית או מהירות אנקודר, ולכן החיישן לא נבדק.")
+
+    adv.findings.append("שלב 2: לולאת הבקרה")
+    cmd = an.command
+    if cmd and cmd.ok:
+        adv.findings.append(f"פקודת הדרייבר: שיא {cmd.peak:.0f}, רוויה {cmd.saturated_pct:.1f}%, רעש {cmd.noise_ratio:.2f}")
+    loop = Advice()
+    loop_add = lambda p, f, why: loop.changes.append(Change(p, g(p), f, why))  # noqa: E731
+    if cmd and cmd.ok and cmd.saturated_pct > 2:
+        adv.findings.append("הפקודה למנוע ברוויה: הקטן מהירות או תאוצה והקלט שוב לפני שינוי כיול.")
+    else:
+        if cmd and cmd.ok and cmd.noise_ratio > 0.15:
+            loop_add("KD", 0.8, "פקודת הדרייבר רועשת: בדרך כלל KD גבוה מדי.")
+        if an.move and an.move.ok:
+            _move_advice(an.move, loop, loop_add)
+        elif an.step and an.step.ok:
+            sub = advise(mode, "position_step", gains, Analysis(step=an.step))
+            loop.findings += sub.findings
+            loop.changes += sub.changes
+        else:
+            loop.findings.append("אין בהקלטה שגיאת מיקום או מיקום רצוי, ולכן הלולאה לא נבדקה.")
+    adv.findings += loop.findings
+    if sensor_bad:
+        if loop.changes:
+            adv.findings.append("השינויים בלולאה ייבדקו אחרי תיקון החיישן: לולאת המהירות עובדת לפי החיישן, ולכן "
+                                "תקן קודם את AG, הקלט שוב ואז נבדוק את KP/KI/KD. מה שנראה כרגע: "
+                                + "; ".join(f"{c.param} {c.percent:+d}%" for c in loop.changes))
+    else:
+        adv.changes += loop.changes
+        if not loop.changes and an.move and an.move.ok:
+            adv.findings.append("הלולאה נראית טובה. אין צורך לשנות.")
+    adv.status = "change" if adv.changes else "ok"
     return adv

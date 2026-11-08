@@ -7,13 +7,14 @@
 
 * **PRM** (`File > Upload Controller Parameters` ב-SC-Shell): שורות כמו `XKP[1]=20`, הערות מתחילות ב-`'`.
   מוצגים KP, KI, KD, IS, ER, TL, FF, AG, AF ו-CG לכל ציר. המבנה (PID / PIV) לפי ביט 3 של `CG`.
-* **הקלטות:** קובצי **SDV** של SC-Shell / Data Viewer (וקטורים כמו `YPos`, `YVeldt`, `YAnlgInp`, `Time` במילישניות),
+* **הקלטות:** קובצי **SDV** של SC-Shell / Data Viewer (וקטורים כמו `XPos`, `XPosErr`, `XDesPos`, `XDrvCom`, `XVeldt`, `XVRefdtt`, `XAnlgInp`, ו-`Time` בשניות),
   או קובצי טקסט (CSV / TXT / TSV).
 
 ## סוגי בדיקה
 
 | בדיקה | מה מקליטים | מה מקבלים |
 |---|---|---|
+| **בדיקה מלאה (ברירת מחדל)** | Position Error, Desired Position, Position, Driver Command, Analog Input | קודם חיישן המהירות מול האנקודר (AG), ורק אם הוא תקין: פיגור במהירות קבועה, התייצבות אחרי עצירה, KP / KI |
 | השוואת חיישן מהירות (Tacho) לאנקודר | מיקום / מהירות + כניסה אנלוגית | יחס, התאמה, השהיה, ו-AG חדש אם ההפרש מעל 2% |
 | צעד מהירות (KP=0) | מהירות רצויה ובפועל | KD ואז KI (לפי המדריך) |
 | צעד מיקום קטן | מיקום רצוי ובפועל | KP, KI |
