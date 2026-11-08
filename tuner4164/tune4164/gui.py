@@ -242,6 +242,7 @@ class MainWindow(QMainWindow):
         found = self.prm.axes()
         self.prm_note.setText(f"{Path(name).name}: {len(self.prm.values)} ערכים, צירים {', '.join(found) or '—'}"
                               + (f". {len(self.prm.skipped)} שורות לא זוהו" if self.prm.skipped else ""))
+        self._show_files()
         self._axis_changed(self.axis.currentText())
         self._show_files()
 
@@ -294,6 +295,8 @@ class MainWindow(QMainWindow):
         mode = self.prm.mode(axis)
         if mode:
             self.mode.setCurrentText(mode)
+        if self.advice is not None and self.rec is not None:
+            self.analyze()  # refresh, so the shown numbers always match the axis and the loaded PRM
 
     # ---- analysis ----
     def _col(self, role: str) -> np.ndarray | None:
@@ -305,10 +308,13 @@ class MainWindow(QMainWindow):
         out = {}
         for c, key in enumerate(TUNING_KEYS):
             item = self.table.item(r, c)
+            text = item.text().strip() if item else ""
             try:
-                out[key] = int(item.text()) if item and item.text().strip() else None
+                out[key] = int(round(float(text))) if text else None
             except ValueError:
                 out[key] = None
+            if out[key] is None:  # fall back to the loaded PRM if the cell is empty or unreadable
+                out[key] = self.prm.get(self.axis.currentText(), key)
         return out
 
     def _time(self) -> np.ndarray:
@@ -468,6 +474,9 @@ class MainWindow(QMainWindow):
             p = a.primary
             new = "?" if p.new is None else f"{LRM}{p.new}{LRM}"   # keep "-19126" from turning into "19126-"
             old = "?" if p.old is None else f"{LRM}{p.old}{LRM}"
+            if p.old is None:
+                parts.append(f"<p style='color:#c62f2f'><b>הערך הנוכחי של {axis}{p.param} לא ידוע, ולכן אין מספר חדש. "
+                             f"טען את קובץ ה-PRM של הבקר (או הקלד את הערך בטבלה בשורה {axis}) ולחץ שוב נתח והמלץ.</b></p>")
             parts.append(
                 f"<div style='background:#e8f4ec; border:1px solid #1f9d55; padding:8px;'>"
                 f"<p style='font-size:13pt'><b>השינוי המומלץ עכשיו: {axis}{p.param} מ-{old} ל-{new} "
@@ -476,7 +485,8 @@ class MainWindow(QMainWindow):
                 f"<p>בקונסולה של תוכנת הבקר: <code>{LRM}{axis}{p.param}={new}</code>, ואז להקליט שוב באותה בדיקה.</p></div>")
             if len(a.changes) > 1:
                 parts.append("<p><b>אחר כך, אם עדיין צריך:</b></p><ul>" + "".join(
-                    f"<li>{c.param}: {'+' if c.percent > 0 else ''}{c.percent}%: {html.escape(c.reason)}</li>"
+                    f"<li>{axis}{c.param}: {self._from_to(c)} "
+                    f"({LRM}{'+' if c.percent > 0 else ''}{c.percent}%{LRM}): {html.escape(c.reason)}</li>"
                     for c in a.changes[1:]) + "</ul>")
         else:
             parts.append("<p style='color:#1f9d55'><b>לא נדרש שינוי.</b></p>")
@@ -484,6 +494,12 @@ class MainWindow(QMainWindow):
         ok = a.primary is not None and a.primary.new is not None and a.status != "stop"
         self.copy_btn.setEnabled(ok)
         self.save_btn.setEnabled(ok)
+
+    @staticmethod
+    def _from_to(c) -> str:
+        if c.old is None:
+            return "ערך נוכחי לא ידוע"
+        return f"מ-{LRM}{c.old}{LRM} ל-{LRM}{c.new}{LRM}"
 
     def _command(self) -> str:
         p = self.advice.primary

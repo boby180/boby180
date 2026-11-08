@@ -182,3 +182,10 @@ def test_full_test_with_good_sensor_tunes_the_loop():
     adv = advise("PIV", "full", {"KP": 20, "KI": 50, "KD": 8000, "AG": -17240, "AF": 11}, an)
     params = [c.param for c in adv.changes]
     assert "AG" not in params and params[0] == "KP" and "KI" in params
+
+
+def test_full_loop_change_carries_numbers():
+    from tune4164.advise import Change
+    c = Change("KP", 20, 1.2, "slow settle")
+    assert (c.old, c.new) == (20, 24)
+    assert Change("KI", 50, 1.25, "").new in (62, 63)  # 62.5 rounds to even
