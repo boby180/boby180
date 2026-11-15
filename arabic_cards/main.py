@@ -95,6 +95,41 @@ def cmd_gui(cfg: Config, args) -> None:
     sys.exit(run())
 
 
+def cmd_selftest(cfg: Config, args) -> None:
+    """בדיקה עצמית של הקובץ הארוז: פותח את החלון, מנסה הקראה אחת וכותב דוח."""
+    import tempfile
+    import traceback
+    lines, ok = [], True
+    try:
+        from PySide6.QtCore import QTimer
+        from PySide6.QtWidgets import QApplication
+        from arabic_cards.gui.window import MainWindow
+        from arabic_cards.models import Card
+        test_cfg = Config(data_dir=tempfile.mkdtemp(), autoplay=False)
+        db = Storage(test_cfg.db_path)
+        db.add_card(Card(arabic="مرحبا", translit="מַרְחַבַּא", hebrew="שלום"))
+        db.close()
+        app = QApplication(sys.argv[:1])
+        win = MainWindow(test_cfg)
+        win.show()
+        QTimer.singleShot(1500, app.quit)
+        app.exec()
+        lines.append(f"gui: ok, card shown: {win.review.front.text() == 'مرحبا'}")
+        win.close()
+    except Exception:
+        ok = False
+        lines.append("gui: FAILED\n" + traceback.format_exc())
+    try:
+        out = Path(args.report).with_suffix(".mp3")
+        EdgeTTS(rate=cfg.tts_rate).synthesize("شو اسمك؟ كيف حالك اليوم؟", out, cfg.voice)
+        lines.append(f"tts: ok, {out.stat().st_size} bytes, voice {cfg.voice}")
+    except Exception:
+        ok = False
+        lines.append("tts: FAILED\n" + traceback.format_exc())
+    Path(args.report).write_text("\n".join(lines) + "\n", encoding="utf-8")
+    sys.exit(0 if ok else 1)
+
+
 def main() -> None:
     cfg = Config.load()
     if len(sys.argv) == 1:
@@ -107,6 +142,7 @@ def main() -> None:
     s = sub.add_parser("voices"); s.add_argument("text"); s.set_defaults(fn=cmd_voices)
     s = sub.add_parser("review"); s.set_defaults(fn=cmd_review)
     s = sub.add_parser("gui"); s.set_defaults(fn=cmd_gui)
+    s = sub.add_parser("selftest"); s.add_argument("report"); s.set_defaults(fn=cmd_selftest)
     args = p.parse_args()
     args.fn(cfg, args)
 

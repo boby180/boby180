@@ -2,10 +2,15 @@
 from __future__ import annotations
 
 import json
+import sys
 from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
+if getattr(sys, "frozen", False):
+    # קובץ EXE: הנתונים וההגדרות נשמרים ליד הקובץ, לא בתיקייה הזמנית שממנה הוא רץ
+    ROOT = Path(sys.executable).resolve().parent
+else:
+    ROOT = Path(__file__).resolve().parent.parent
 CONFIG_FILE = ROOT / "config.json"
 
 
