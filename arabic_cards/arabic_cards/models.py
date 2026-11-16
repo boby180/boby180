@@ -1,6 +1,7 @@
 """מודל הנתונים: כרטיס ומצב החזרה שלו."""
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
@@ -27,7 +28,7 @@ class Card:
     id: int | None = None
 
     def speak_text(self) -> str:
-        return self.tts_text.strip() or self.arabic.strip()
+        return self.tts_text.strip() or spoken_form(self.arabic)
 
 
 @dataclass
@@ -39,3 +40,25 @@ class ReviewState:
     ease: float = 2.5
     reps: int = 0
     lapses: int = 0
+
+
+_BRACKETS = re.compile(r"\([^()]*\)|\[[^\[\]]*\]")
+_NOT_ARABIC = re.compile(r"[^\u0600-\u06FF\s]+")
+
+
+def spoken_form(arabic: str) -> str:
+    """מה שמקריאים מתוך שדה הערבית כשאין tts_text.
+
+    בחפיסות יש בשדה גם הערות: "هُنَا / هَهُنَا", "شُو (מד'; =...)", "سَاكِن [سُكَّان / ...]".
+    מקריאים רק את הצורה הראשונה, בלי סוגריים, בלי חלופות ובלי אותיות שאינן ערביות.
+    """
+    text = arabic
+    while True:                                   # סוגריים מקוננים, מבפנים החוצה
+        cleaned = _BRACKETS.sub(" ", text)
+        if cleaned == text:
+            break
+        text = cleaned
+    text = re.split(r"[(\[]", text)[0]            # סוגר שנפתח ולא נסגר
+    text = text.split("/")[0]
+    text = _NOT_ARABIC.sub(" ", text)
+    return " ".join(text.split()) or arabic.strip()

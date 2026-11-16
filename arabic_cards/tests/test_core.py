@@ -13,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from arabic_cards import srs
 from arabic_cards.anki_import import notes_to_cards, read_apkg
-from arabic_cards.models import Card, ReviewState
+from arabic_cards.models import Card, ReviewState, spoken_form
 from arabic_cards.session import ReviewSession
 from arabic_cards.storage import Storage
 from arabic_cards.tts import CachedTTS, TTSProvider
@@ -171,6 +171,22 @@ def test_tts_cache_no_partial_file():
         assert tts.get("x") == tts.get("x") and Fake.calls == 1
 
 
+def test_spoken_form():
+    cases = {
+        "هُنَا / هَهُنَا": "هُنَا",
+        "شُو (מד'; =أَيُّ شَيْءٍ هُوَ)": "شُو",
+        "سَاكِن [سُكَّان / سَكَنَة]": "سَاكِن",
+        "مش (מד'; =مَا هُوَ/هِيَ (x) شَيْء)": "مش",
+        "كلمة (הערה שלא נסגרה": "كلمة",
+        "شو اسمك؟": "شو اسمك؟",
+        "هٰذَا آلْ": "هٰذَا آلْ",
+    }
+    for raw, want in cases.items():
+        assert spoken_form(raw) == want, raw
+    assert Card(arabic="هُنَا / هَهُنَا", tts_text="هون").speak_text() == "هون"
+    assert Card(arabic="هُنَا / هَهُنَا").speak_text() == "هُنَا"
+
+
 def test_describe_interval():
     assert [srs.describe_interval(d) for d in (0, 1, 2, 2.5, 45, 400)] == \
         ["דקה", "יום", "יומיים", "יומיים", "1.5 חודשים", "שנה"]
@@ -190,5 +206,5 @@ def test_config_ignores_unknown_keys(monkeypatch=None):
 if __name__ == "__main__":
     for fn in (test_import_legacy, test_import_new_format, test_srs, test_session,
                test_search_and_delete, test_tts_cache_no_partial_file,
-               test_describe_interval, test_config_ignores_unknown_keys):
+               test_spoken_form, test_describe_interval, test_config_ignores_unknown_keys):
         fn(); print("OK", fn.__name__)

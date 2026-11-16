@@ -158,9 +158,9 @@ class ReviewPage(QWidget):
         self.listen_btn.setEnabled(shown or self.cfg.direction == "ar2he")
         n = self.session.counts()
         self.counts.setText(
-            f"<span style='color:#21618c'>חדשים: <b>{n[NEW]}</b></span> &nbsp;·&nbsp; "
-            f"<span style='color:#c0392b'>לחזור שוב: <b>{n[AGAIN]}</b></span> &nbsp;·&nbsp; "
-            f"<span style='color:#1e8449'>חזרות: <b>{n[REVIEW]}</b></span>")
+            f"<span style='color:#3498db'>חדשים: <b>{n[NEW]}</b></span> &nbsp;·&nbsp; "
+            f"<span style='color:#e74c3c'>לחזור שוב: <b>{n[AGAIN]}</b></span> &nbsp;·&nbsp; "
+            f"<span style='color:#27ae60'>חזרות: <b>{n[REVIEW]}</b></span>")
 
     def _show_done(self) -> None:
         self.audio.stop()
