@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write    # publishes the EXE as a release asset
 
 jobs:
   build:
@@ -37,6 +37,16 @@ jobs:
         with:
           name: ArabicCards-windows
           path: arabic_cards/dist/ArabicCards.exe
+      - name: Publish a direct download link
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete arabic-cards-latest --cleanup-tag --yes || true
+          gh release create arabic-cards-latest dist/ArabicCards.exe \
+            --target "$GITHUB_SHA" --latest=false \
+            --title "Arabic Cards for Windows" \
+            --notes "Download ArabicCards.exe and double-click it. No installation needed."
       - uses: actions/upload-artifact@v4
         if: always()
         with:
