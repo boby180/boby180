@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (
 )
 
 from .advise import SET_NAMES, TESTS, Advice, advise
-from .analysis import Analysis, command_metrics, move_metrics, step_metrics, tacho_metrics
+from .analysis import Analysis, command_metrics, move_metrics, moving_from_velocity, step_metrics, tacho_metrics
 from .prm import AXES, TUNING_KEYS, PrmFile, load_prm, prm_text
 from .recording import SAMPLE_TIME_4M, Recording, load_recording
 from .version import __version__
@@ -351,8 +351,12 @@ class MainWindow(QMainWindow):
                 moving = np.abs(vref) > 1e-6 * (np.max(np.abs(vref)) + 1)
             elif ref is not None:
                 moving = np.abs(np.gradient(ref)) > 1e-9
+            elif vel is not None or act is not None:
+                moving = moving_from_velocity(t, vel if vel is not None else np.gradient(act, t))
+                an.warnings.append("אין בהקלטה מיקום רצוי: זמני התנועה והעצירה זוהו לפי מהירות הציר בפועל. "
+                                   "עדיף להוסיף להקלטה את Desired Position.")
             if pe is not None:
-                an.move = move_metrics(t, pe, moving, vref=vref)
+                an.move = move_metrics(t, pe, moving, vref=vref, pos=act, cmd=cmd)
         if test == "full" and vel is not None and tacho is not None:
             an.tacho = tacho_metrics(vel, tacho)
         if test == "tacho":

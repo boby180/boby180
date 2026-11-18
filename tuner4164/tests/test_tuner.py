@@ -212,3 +212,45 @@ def test_slow_wobble_after_stop_points_to_ki():
 def test_prm_reads_three_gain_sets():
     prm = parse_prm("XKP[1]=20\nXKP[2]=24\nXKP[3]=30\n")
     assert [prm.get("X", f"KP[{i}]") for i in (1, 2, 3)] == [20, 24, 30]
+
+
+def test_tuning_keys_keep_limits():
+    from tune4164.prm import TUNING_KEYS
+    for k in ("IS", "ER", "TL", "AG", "AF", "CG", "KP[3]", "KI[3]", "KD[3]"):
+        assert k in TUNING_KEYS
+
+
+def _friction_move(jump_over=False):
+    t = np.arange(0, 6, 0.005)
+    moving = t < 2
+    pos = np.where(moving, t * 1000, 2037.0)                 # overshoots the 2000 target by 37 and sticks
+    brk = (t >= 3.5)
+    pos = np.where(brk, 2037 - np.clip((t - 3.5) * 200, 0, 37 + (60 if jump_over else 0)), pos)
+    pe = np.where(moving, 0.0, 2000 - pos)
+    cmd = np.where(moving, 1300.0, np.clip(300 - (t - 2) * 550, -520, 300))
+    return t, pe, moving, pos, cmd
+
+
+def test_stick_slip_after_stop_raises_ki():
+    from tune4164.advise import Advice, _move_advice, gain_change
+    t, pe, moving, pos, cmd = _friction_move()
+    mv = move_metrics(t, pe, moving, pos=pos, cmd=cmd)
+    assert mv.stick and mv.stuck_error == -37 and 1.3 < mv.stuck_time < 1.7 and not mv.stick_jump_over
+    adv = Advice()
+    g = {"KI[2]": 20, "KI[3]": 20}
+    _move_advice(mv, adv, lambda p, sets, f, why: adv.changes.append(gain_change(g, p, sets, f, why)))
+    assert adv.primary.items() == [("KI[2]", 20, 26), ("KI[3]", 20, 26)]
+
+
+def test_stick_slip_jumping_over_lowers_ki():
+    t, pe, moving, pos, cmd = _friction_move(jump_over=True)
+    mv = move_metrics(t, pe, moving, pos=pos, cmd=cmd)
+    assert mv.stick and mv.stick_jump_over
+
+
+def test_moving_from_velocity_closes_short_gaps():
+    from tune4164.analysis import moving_from_velocity
+    t = np.arange(0, 1, 0.01)
+    v = np.where((t < 0.4) | ((t > 0.45) & (t < 0.7)), 1000.0, 0.0)
+    m = moving_from_velocity(t, v)
+    assert m[42] and not m[90]

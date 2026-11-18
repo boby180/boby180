@@ -224,6 +224,20 @@ def _move_advice(mv, adv: Advice, add) -> None:
         + f", שגיאה סופית {mv.final_error:.0f} (סף {mv.tolerance:.0f})"
         + (f", תנודה {mv.residual_freq:.1f}Hz" if mv.residual_freq else ""))
     stop_note = " משנים רק את [2] ו-[3] (אחרי סוף התנועה ובעמידה). [1] בזמן תנועה נשאר כמו שהוא."
+    if mv.stick:
+        free = (f"עד שהציר השתחרר אחרי {mv.stuck_time:.1f} שניות" if mv.stuck_time is not None
+                else "והציר לא השתחרר עד סוף העמידה")
+        adv.findings.append(f"חיכוך (stick-slip): אחרי העצירה הציר נתקע בשגיאה של \u200e{mv.stuck_error:.0f}\u200e ספירות. "
+                            f"הפקודה למנוע השתנתה לאט מ-\u200e{mv.cmd_at_stop:.0f}\u200e ל-\u200e{mv.breakaway_cmd:.0f}\u200e (האינטגרל בונה כוח) "
+                            f"{free}. זה לא רעש ולא תנודה, ומסנן לא יעזור כאן.")
+        if mv.stick_jump_over:
+            add("KI", STOP, 0.8, "אחרי השחרור הציר קופץ לצד השני של המטרה ונתקע שוב (נדנוד חיכוך): האינטגרל חזק מדי "
+                                 "ביחס לחיכוך. מורידים מעט KI." + stop_note)
+        else:
+            add("KI", STOP, 1.3, "האינטגרל בונה את הכוח לאט מדי מול החיכוך, ולכן הציר נשאר תקוע. מעלים KI כדי "
+                                 "שהפקודה תגיע מהר יותר לכוח השחרור. אם אחרי השינוי הציר יתחיל לקפוץ לצד השני של "
+                                 "המטרה, זה סימן שהגזמנו וחוזרים חצי דרך." + stop_note)
+        return
     slow = mv.residual_freq is not None and mv.residual_freq < 1.0
     wobbles = mv.sustained or mv.oscillations >= 3
     if wobbles and slow:

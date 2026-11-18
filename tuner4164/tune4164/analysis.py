@@ -39,6 +39,12 @@ class MoveMetrics:
     final_error: float = 0.0             # PE at the end of the standstill
     tolerance: float = 0.0
     sustained: bool = False              # still oscillating at the end of the standstill
+    stick: bool = False                  # friction: stuck while the command ramps, then breaks free
+    stuck_error: float = 0.0             # PE while stuck [counts]
+    stuck_time: float | None = None      # stop -> breakaway [s]; None = still stuck at the end
+    cmd_at_stop: float = 0.0
+    breakaway_cmd: float = 0.0           # driver command when it broke free (or at the end)
+    stick_jump_over: bool = False        # after breaking free it jumped to the other side (hunting)
     has_stop: bool = False
     ok: bool = False
     note: str = ""
@@ -145,8 +151,55 @@ def step_metrics(t: np.ndarray, y: np.ndarray, ref: np.ndarray | None = None, ba
     return m
 
 
+def moving_from_velocity(t: np.ndarray, vel: np.ndarray, frac: float = 0.05, gap: float = 0.15) -> np.ndarray:
+    """Moving = actual speed above 5% of the top speed, with gaps shorter than 'gap' seconds closed
+    (used when the recording has no desired position)."""
+    a = np.abs(np.nan_to_num(vel))
+    top = float(np.max(a)) if len(a) else 0.0
+    m = a > frac * top if top > 0 else np.zeros(len(a), dtype=bool)
+    idx = np.flatnonzero(m)
+    for i, j in zip(idx[:-1], idx[1:]):
+        if j - i > 1 and t[j] - t[i] <= gap:
+            m[i:j] = True
+    return m
+
+
+def _stick_slip(m: "MoveMetrics", t: np.ndarray, pe: np.ndarray, pos: np.ndarray, cmd: np.ndarray) -> None:
+    """Friction after a stop: the position does not move (within 1 count) for at least 0.3 s while
+    the driver command ramps (the integrator building force), then the axis breaks free."""
+    n = len(pos)
+    if n < 10:
+        return
+    dt = float(np.median(np.diff(t))) or 1e-3
+    win = max(3, int(round(0.3 / dt)))
+    s = None
+    for i in range(0, n - win + 1):
+        seg = pos[i:i + win]
+        if seg.max() - seg.min() <= 1:
+            s = i
+            break
+    if s is None:
+        return
+    off = np.flatnonzero(np.abs(pos[s:] - pos[s]) > 1)
+    b = s + int(off[0]) if len(off) else n - 1
+    ramp = abs(cmd[b] - cmd[s])
+    scale = max(float(np.max(np.abs(cmd))), 1.0)
+    if abs(pe[s]) <= m.tolerance or ramp < 0.15 * scale:
+        return
+    m.stick = True
+    m.stuck_error = float(pe[s])
+    m.cmd_at_stop = float(cmd[0])
+    m.breakaway_cmd = float(cmd[b])
+    if len(off):
+        m.stuck_time = float(t[b] - t[0])
+        rest = pe[b:]
+        m.stick_jump_over = bool(np.any(np.sign(rest) == -np.sign(m.stuck_error))
+                                 and np.max(np.abs(rest[np.sign(rest) == -np.sign(m.stuck_error)])) > 0.5 * abs(m.stuck_error))
+
+
 def move_metrics(t: np.ndarray, pe: np.ndarray, moving: np.ndarray | None = None,
-                 tolerance: float | None = None, vref: np.ndarray | None = None) -> MoveMetrics:
+                 tolerance: float | None = None, vref: np.ndarray | None = None,
+                 pos: np.ndarray | None = None, cmd: np.ndarray | None = None) -> MoveMetrics:
     """Point-to-point motion judged from the position error.
 
     'moving' marks samples where the desired position changes (from the desired position or
@@ -164,7 +217,9 @@ def move_metrics(t: np.ndarray, pe: np.ndarray, moving: np.ndarray | None = None
         moving[: int(np.argmax(a)) + 1] = True
     moving = moving.astype(bool)
     still = ~moving
-    noise = float(np.std(pe[still][-max(5, int(still.sum()) // 4):])) if still.sum() > 10 else float(np.std(pe[-n // 10:]))
+    # sample-to-sample jitter, so a slow drift or a friction jump is not mistaken for noise
+    quiet = pe[still] if still.sum() > 10 else pe[-n // 10:]
+    noise = float(np.std(np.diff(quiet)) / np.sqrt(2)) if len(quiet) > 2 else 0.0
     m.tolerance = tol = tolerance if tolerance else max(5.0, 3.0 * noise)
     if vref is not None and np.any(moving):
         top = np.max(np.abs(vref[moving]))
@@ -206,6 +261,8 @@ def move_metrics(t: np.ndarray, pe: np.ndarray, moving: np.ndarray | None = None
     if len(cr) >= 3:
         m.residual_freq = float(1.0 / (2 * np.mean(np.diff(cr))))
         m.sustained = cr[-1] > after_t[-1] * 0.8
+    if pos is not None and cmd is not None:
+        _stick_slip(m, t[j:k], after, pos[j:k], cmd[j:k])
     return m
 
 
