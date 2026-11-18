@@ -88,6 +88,24 @@ def _fmt_metric(v, unit: str) -> str:
     return f"{v:.0f}" if abs(v) >= 10 or float(v).is_integer() else f"{v:.2f}"
 
 
+def default_history_path() -> Path:
+    """One fixed file for every version (on Windows: AppData\\Local\\Tuner4164\\history.json).
+    Version 0.4.0 kept it in a folder named after the EXE (with the version in it): bring that over."""
+    base = QStandardPaths.writableLocation(QStandardPaths.GenericDataLocation)
+    path = Path(base or Path.home()) / "Tuner4164" / "history.json"
+    if not path.exists():
+        old = QStandardPaths.writableLocation(QStandardPaths.AppDataLocation)
+        if old:
+            found = sorted(Path(old).parent.glob("Tuner4164*/history.json"), key=lambda f: f.stat().st_mtime)
+            if found:
+                try:
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_bytes(found[-1].read_bytes())
+                except OSError:
+                    pass
+    return path
+
+
 class MainWindow(QMainWindow):
     def __init__(self, history_path: str | Path | None = None):
         super().__init__()
@@ -99,8 +117,7 @@ class MainWindow(QMainWindow):
         self.advice: Advice | None = None
         self.comparison = None
         if history_path is None:
-            base = QStandardPaths.writableLocation(QStandardPaths.AppDataLocation)
-            history_path = Path(base or Path.home() / ".tuner4164") / "history.json"
+            history_path = default_history_path()
         self.history = History(history_path)
 
         root = QWidget()
@@ -469,7 +486,9 @@ class MainWindow(QMainWindow):
         axis = self.axis.currentText()
         rows = self.history.for_axis(axis)
         self.hist_label.setText(f"ציר {axis}: {len(rows)} הקלטות בזיכרון. כל ניתוח נשמר כאן אוטומטית, וההקלטה הבאה "
-                                f"של אותו ציר מושווית לקודמת. כשמתחילים מכונה או ציר מחדש, לוחצים על הכפתור למטה.")
+                                f"של אותו ציר מושווית לקודמת. לכל ציר רצף נפרד באותו קובץ, וצירים לא דורסים זה את זה. "
+                                f"כשמתחילים מכונה או ציר מחדש, לוחצים על הכפתור למטה.<br>"
+                                f"<span style='color:#5d6b7a'>קובץ הזיכרון: {html.escape(str(self.history.path))}</span>")
         self.hist_table.setRowCount(len(rows))
         prev = None
         for r, e in enumerate(rows):
