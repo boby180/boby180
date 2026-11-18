@@ -16,7 +16,7 @@ from PySide6.QtCore import QSettings, QStandardPaths, Qt
 from PySide6.QtGui import QColor, QPalette
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QFileDialog, QFormLayout, QGroupBox, QHBoxLayout, QHeaderView, QLabel,
-    QDialog, QDialogButtonBox, QInputDialog, QMainWindow, QMessageBox, QPushButton, QTabWidget, QSpinBox, QSplitter, QTableWidget, QTableWidgetItem, QTextBrowser, QVBoxLayout,
+    QDialog, QDialogButtonBox, QFrame, QInputDialog, QScrollArea, QMainWindow, QMessageBox, QPushButton, QTabWidget, QSpinBox, QSplitter, QTableWidget, QTableWidgetItem, QTextBrowser, QVBoxLayout,
     QWidget,
 )
 
@@ -173,8 +173,16 @@ class MainWindow(QMainWindow):
 
     # ---- building ----
     def _left(self) -> QWidget:
+        outer = QWidget()
+        olay = QVBoxLayout(outer)
+        olay.setContentsMargins(0, 0, 0, 0)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
         w = QWidget()
         lay = QVBoxLayout(w)
+        scroll.setWidget(w)
+        olay.addWidget(scroll, 1)
         box = QGroupBox("פרמטרי כיול (מה-PRM, אפשר לערוך)")
         bl = QVBoxLayout(box)
         self.table = QTableWidget(len(AXES), len(TUNING_KEYS) + 1)
@@ -220,25 +228,61 @@ class MainWindow(QMainWindow):
         form.addRow("ציר:", self.axis)
         form.addRow("מבנה בקרה:", self.mode)
         form.addRow("סוג הבדיקה:", self.test)
+        lay.addWidget(setup)
+
+        cols_box = QGroupBox("עמודות בהקלטה")
+        cl = QVBoxLayout(cols_box)
+        self.cols_toggle = QPushButton()
+        self.cols_toggle.setFlat(True)
+        self.cols_toggle.setStyleSheet("text-align:right; color:#1f6fb3; font-weight:bold;")
+        self.cols_toggle.clicked.connect(lambda: self._show_cols(not self.cols_panel.isVisible()))
+        self.cols_summary = QLabel("עדיין לא נטענה הקלטה.")
+        self.cols_summary.setWordWrap(True)
+        self.cols_summary.setStyleSheet("color:#5d6b7a;")
+        cl.addWidget(self.cols_toggle)
+        cl.addWidget(self.cols_summary)
+        self.cols_panel = QWidget()
+        cform = QFormLayout(self.cols_panel)
+        cform.setContentsMargins(0, 0, 0, 0)
         self.cols: dict[str, QComboBox] = {}
         for role, label in ROLE_LABELS:
             c = QComboBox()
             c.addItem(NONE)
+            c.currentIndexChanged.connect(self._update_cols_summary)
             self.cols[role] = c
-            form.addRow(f"עמודת {label}:", c)
+            cform.addRow(f"{label}:", c)
         self.derive = QCheckBox("העמודות הן מיקום. גזור מהן מהירות (לצעד מהירות)")
-        form.addRow(self.derive)
+        cform.addRow(self.derive)
         self.rg = QSpinBox()
         self.rg.setRange(1, 10000)
         self.rg.setToolTip("RG של ההקלטה. משמש רק כשאין עמודת זמן: מרווח = RG × 61.035µs")
-        form.addRow("RG (אם אין עמודת זמן):", self.rg)
-        go = QPushButton("נתח והמלץ")
-        go.setStyleSheet("QPushButton { background:#1f6fb3; color:white; font-weight:bold; padding:8px; border-radius:6px; }")
-        go.clicked.connect(lambda: self.analyze())
-        form.addRow(go)
-        lay.addWidget(setup)
+        cform.addRow("RG (אם אין עמודת זמן):", self.rg)
+        cl.addWidget(self.cols_panel)
+        lay.addWidget(cols_box)
         lay.addStretch(1)
-        return w
+        self._show_cols(self.prefs.value("show_cols", "0") == "1")
+
+        go = QPushButton("נתח והמלץ")
+        go.setMinimumHeight(46)
+        go.setStyleSheet("QPushButton { background:#1f6fb3; color:white; font-weight:bold; font-size:13pt;"
+                         " padding:8px; border-radius:6px; } QPushButton:hover { background:#2a7fcc; }")
+        go.clicked.connect(lambda: self.analyze())
+        self.go_btn = go
+        olay.addWidget(go)   # outside the scroll area: always visible
+        return outer
+
+    def _show_cols(self, show: bool) -> None:
+        self.cols_panel.setVisible(show)
+        self.cols_summary.setVisible(not show)
+        self.cols_toggle.setText(("▲ הסתר את בחירת העמודות" if show else "▼ הצג ושנה את בחירת העמודות"))
+        self.prefs.setValue("show_cols", "1" if show else "0")
+
+    def _update_cols_summary(self) -> None:
+        if not hasattr(self, "cols_summary"):
+            return
+        chosen = [f"{label.split(' (')[0]}: {c.currentText()}" for (role, label), c in
+                  zip(ROLE_LABELS, self.cols.values()) if c.currentIndex() > 0]
+        self.cols_summary.setText("נבחרו אוטומטית: " + " · ".join(chosen) if chosen else "לא נבחרו עמודות.")
 
     def _right(self) -> QWidget:
         w = QWidget()
@@ -305,7 +349,7 @@ class MainWindow(QMainWindow):
         hrow.addStretch(1)
         hl.addLayout(hrow)
         self.tabs.addTab(hist, "היסטוריית כיול")
-        lay.addWidget(self.tabs, 5)
+        lay.addWidget(self.tabs, 3)
         res = QGroupBox("ממצאים והמלצה")
         rl = QVBoxLayout(res)
         self.result = QTextBrowser()
@@ -392,6 +436,9 @@ class MainWindow(QMainWindow):
             idx = self.rec.time_column if role == "time" else self.rec.guess(role)
             combo.setCurrentIndex(0 if idx is None else idx + 1)
             combo.blockSignals(False)
+        self._update_cols_summary()
+        if self.rec.guess("error") is None and (self.rec.guess("reference") is None or self.rec.guess("actual") is None):
+            self._show_cols(True)   # the program could not find the position error: let the user choose
         roles = {r: self.rec.guess(r) for r in ("reference", "error", "velocity", "tacho")}
         if roles["tacho"] is not None and roles["reference"] is None and roles["error"] is None:
             self.test.setCurrentIndex(self.test.findData("tacho"))  # a sensor-vs-encoder recording
