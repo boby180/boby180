@@ -14,7 +14,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 AXES = "XYZW"
-TUNING_KEYS = ["KP", "KI", "KD", "IS", "ER", "TL", "FF[1]", "FF[2]", "AG", "AF", "CG"]
+# KP/KI/KD have three sets: [1] in motion, [2] after motion (until in target), [3] standing still.
+GAIN_SETS = (1, 2, 3)
+TUNING_KEYS = [f"{k}[{i}]" for k in ("KP", "KI", "KD") for i in GAIN_SETS] + ["ER", "TL", "FF[1]", "FF[2]", "AG", "AF", "CG"]
 # CG bit 3 (zero based) selects the control scheme (Users Manual chapter 6); set = PID, clear = PIV.
 CG_PID_BIT = 3
 

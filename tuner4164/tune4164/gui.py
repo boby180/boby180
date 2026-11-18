@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import html
+import re
 import sys
 from pathlib import Path
 
@@ -16,7 +17,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .advise import TESTS, Advice, advise
+from .advise import SET_NAMES, TESTS, Advice, advise
 from .analysis import Analysis, command_metrics, move_metrics, step_metrics, tacho_metrics
 from .prm import AXES, TUNING_KEYS, PrmFile, load_prm, prm_text
 from .recording import SAMPLE_TIME_4M, Recording, load_recording
@@ -24,6 +25,8 @@ from .version import __version__
 
 NONE = "—"
 LRM = "‎"
+SETS_NOTE = ("KP/KI/KD בבקר הם שלוש קבוצות: [1] בזמן תנועה, [2] אחרי סוף התנועה עד הכניסה למטרה, "
+             "[3] בעמידה (אחרי TR/TT). ההמלצה משנה רק את הקבוצות של השלב שבו נמצאה הבעיה.")
 ROLE_LABELS = [("time", "זמן"), ("reference", "רצוי (Desired)"), ("actual", "בפועל (Position/Velocity)"),
                ("error", "שגיאת מיקום (PE)"), ("command", "פקודת דרייבר"),
                ("velocity", "מהירות מהאנקודר"), ("velocity_ref", "מהירות רצויה"),
@@ -128,6 +131,10 @@ class MainWindow(QMainWindow):
         bl = QVBoxLayout(box)
         self.table = QTableWidget(len(AXES), len(TUNING_KEYS) + 1)
         self.table.setHorizontalHeaderLabels(TUNING_KEYS + ["מבנה"])
+        for c, key in enumerate(TUNING_KEYS):
+            m = re.search(r"\[(\d)\]$", key)
+            if key[:2] in ("KP", "KI", "KD") and m:
+                self.table.horizontalHeaderItem(c).setToolTip(SET_NAMES[int(m.group(1))])
         self.table.setVerticalHeaderLabels(list(AXES))
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
         self.table.setLayoutDirection(Qt.LeftToRight)
@@ -472,38 +479,44 @@ class MainWindow(QMainWindow):
             parts.append("<p style='color:#c62f2f'><b>אין המלצה לשינוי מההקלטה הזו.</b></p>")
         elif a.primary:
             p = a.primary
-            new = "?" if p.new is None else f"{LRM}{p.new}{LRM}"   # keep "-19126" from turning into "19126-"
-            old = "?" if p.old is None else f"{LRM}{p.old}{LRM}"
-            if p.old is None:
-                parts.append(f"<p style='color:#c62f2f'><b>הערך הנוכחי של {axis}{p.param} לא ידוע, ולכן אין מספר חדש. "
+            if not p.complete:
+                unknown = ", ".join(f"{axis}{k}" for k, o, _ in p.items() if o is None)
+                parts.append(f"<p style='color:#c62f2f'><b>הערך הנוכחי של {unknown} לא ידוע, ולכן אין מספר חדש. "
                              f"טען את קובץ ה-PRM של הבקר (או הקלד את הערך בטבלה בשורה {axis}) ולחץ שוב נתח והמלץ.</b></p>")
             parts.append(
                 f"<div style='background:#e8f4ec; border:1px solid #1f9d55; padding:8px;'>"
-                f"<p style='font-size:13pt'><b>השינוי המומלץ עכשיו: {axis}{p.param} מ-{old} ל-{new} "
-                f"({LRM}{'+' if p.percent > 0 else ''}{p.percent}%{LRM})</b></p>"
+                f"<p style='font-size:13pt'><b>השינוי המומלץ עכשיו "
+                f"({LRM}{'+' if p.percent > 0 else ''}{p.percent}%{LRM}):</b></p>"
+                f"<ul style='font-size:13pt'>{self._items_html(p, axis)}</ul>"
                 f"<p>{html.escape(p.reason)}</p>"
-                f"<p>בקונסולה של תוכנת הבקר: <code>{LRM}{axis}{p.param}={new}</code>, ואז להקליט שוב באותה בדיקה.</p></div>")
+                + (f"<p>בקונסולה של תוכנת הבקר: <code>{LRM}{html.escape(self._command())}{LRM}</code>, "
+                   f"ואז להקליט שוב באותה בדיקה.</p>" if p.complete else "")
+                + f"<p style='color:#555'>{html.escape(SETS_NOTE)}</p></div>")
             if len(a.changes) > 1:
                 parts.append("<p><b>אחר כך, אם עדיין צריך:</b></p><ul>" + "".join(
-                    f"<li>{axis}{c.param}: {self._from_to(c)} "
-                    f"({LRM}{'+' if c.percent > 0 else ''}{c.percent}%{LRM}): {html.escape(c.reason)}</li>"
+                    f"<li>{'+' if c.percent > 0 else ''}{c.percent}%: {html.escape(c.reason)}"
+                    f"<ul>{self._items_html(c, axis)}</ul></li>"
                     for c in a.changes[1:]) + "</ul>")
         else:
             parts.append("<p style='color:#1f9d55'><b>לא נדרש שינוי.</b></p>")
         self.result.setHtml("".join(parts))
-        ok = a.primary is not None and a.primary.new is not None and a.status != "stop"
+        ok = a.primary is not None and a.primary.complete and a.status != "stop"
         self.copy_btn.setEnabled(ok)
         self.save_btn.setEnabled(ok)
 
     @staticmethod
-    def _from_to(c) -> str:
-        if c.old is None:
-            return "ערך נוכחי לא ידוע"
-        return f"מ-{LRM}{c.old}{LRM} ל-{LRM}{c.new}{LRM}"
+    def _items_html(c, axis: str) -> str:
+        out = []
+        for k, old, new in c.items():
+            what = "ערך נוכחי לא ידוע" if old is None else f"מ-{LRM}{old}{LRM} ל-{LRM}{new}{LRM}"
+            m = re.search(r"\[(\d)\]$", k)
+            when = f" ({SET_NAMES[int(m.group(1))]})" if m and int(m.group(1)) in SET_NAMES else ""
+            out.append(f"<li><b>{LRM}{axis}{k}{LRM}</b>{when}: {what}</li>")  # LRM keeps "-19126" intact
+        return "".join(out)
 
     def _command(self) -> str:
-        p = self.advice.primary
-        return f"{self.axis.currentText()}{p.param}={p.new}"
+        axis = self.axis.currentText()
+        return ";".join(f"{axis}{k}={new}" for k, _, new in self.advice.primary.items())
 
     def copy_command(self) -> None:
         QApplication.clipboard().setText(self._command())
@@ -511,13 +524,13 @@ class MainWindow(QMainWindow):
 
     def save_prm(self) -> None:
         p, axis = self.advice.primary, self.axis.currentText()
-        default = str(Path(self._dir()) / f"tune_{axis}{p.param}.prm")
+        default = str(Path(self._dir()) / f"tune_{axis}{p.param.replace('[', '').replace(']', '')}.prm")
         name, _ = QFileDialog.getSaveFileName(self, "שמירת PRM עם השינוי", default, "קובצי פרמטרים (*.prm)")
         if not name:
             return
         path = Path(name) if name.lower().endswith(".prm") else Path(name + ".prm")
-        note = f"{axis}{p.param}: {p.old} -> {p.new} ({p.percent:+d}%)"
-        path.write_bytes(prm_text({(axis, p.param): p.new}, note).encode("ascii"))
+        note = ", ".join(f"{axis}{k}: {o} -> {n}" for k, o, n in p.items()) + f" ({p.percent:+d}%)"
+        path.write_bytes(prm_text({(axis, k): n for k, _, n in p.items()}, note).encode("ascii"))
         self.statusBar().showMessage(f"נשמר: {path}", 6000)
 
 

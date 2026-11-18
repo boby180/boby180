@@ -24,25 +24,51 @@ TESTS = {
 }
 
 
+ALL = (1, 2, 3)   # the whole loop: in motion, after motion, standing still
+STOP = (2, 3)     # after the profile ends: settling into the target and holding it
+SET_NAMES = {1: "בזמן תנועה", 2: "אחרי סוף התנועה", 3: "בעמידה"}
+
+
+def _scale(old: int, factor: float) -> int:
+    v = int(round(old * factor))
+    if v == old:
+        v += (1 if factor > 1 else -1) * (1 if old >= 0 else -1)
+    return v if old < 0 else max(0, v)  # AG may be negative; loop gains never are
+
+
 @dataclass
 class Change:
-    param: str
+    param: str                     # e.g. "KP[2]" or "AG"
     old: int | None
     factor: float
     reason: str
+    extra: tuple = ()              # more (param, old) pairs changed by the same factor, e.g. KP[3]
 
     @property
     def new(self) -> int | None:
-        if self.old is None:
-            return None
-        v = int(round(self.old * self.factor))
-        if v == self.old:
-            v += (1 if self.factor > 1 else -1) * (1 if self.old >= 0 else -1)
-        return v if self.old < 0 else max(0, v)  # AG may be negative; loop gains never are
+        return None if self.old is None else _scale(self.old, self.factor)
+
+    def items(self) -> list[tuple[str, int | None, int | None]]:
+        """Every parameter this change touches: (param, old, new)."""
+        pairs = [(self.param, self.old)] + list(self.extra)
+        return [(k, o, None if o is None else _scale(o, self.factor)) for k, o in pairs]
+
+    @property
+    def complete(self) -> bool:
+        return all(o is not None for _, o, _ in self.items())
+
+    @property
+    def label(self) -> str:
+        return ", ".join(k for k, _, _ in self.items())
 
     @property
     def percent(self) -> int:
         return int(round((self.factor - 1) * 100))
+
+
+def gain_change(gains: dict, base: str, sets: tuple, factor: float, why: str) -> Change:
+    keys = [f"{base}[{i}]" for i in sets]
+    return Change(keys[0], gains.get(keys[0]), factor, why, tuple((k, gains.get(k)) for k in keys[1:]))
 
 
 @dataclass
@@ -64,7 +90,7 @@ def _fmt_z(z: float | None) -> str:
 def advise(mode: str, test: str, gains: dict[str, int | None], an: Analysis) -> Advice:
     adv = Advice(warnings=list(an.warnings))
     g = lambda k: gains.get(k)  # noqa: E731
-    add = lambda p, f, why: adv.changes.append(Change(p, g(p), f, why))  # noqa: E731
+    add = lambda p, sets, f, why: adv.changes.append(gain_change(gains, p, sets, f, why))  # noqa: E731
 
     if test == "full":
         return _full(mode, gains, an, adv)
@@ -79,7 +105,7 @@ def advise(mode: str, test: str, gains: dict[str, int | None], an: Analysis) -> 
                                 "הקטן מהירות או תאוצה בבדיקה והקלט שוב. אל תשנה כיול לפי ההקלטה הזו.")
             return adv
         if cmd.noise_ratio > 0.15:
-            add("KD", 0.8, "פקודת הדרייבר רועשת (קפיצות בין דגימות). בדרך כלל זה KD גבוה מדי, "
+            add("KD", ALL, 0.8, "פקודת הדרייבר רועשת (קפיצות בין דגימות). בדרך כלל זה KD גבוה מדי, "
                            "מה שנשמע כזמזום או שריקה. שקול גם מסנן מסדר 2 (100-400Hz) כפי שהיצרן ממליץ.")
 
     if test == "tacho":
@@ -118,7 +144,7 @@ def advise(mode: str, test: str, gains: dict[str, int | None], an: Analysis) -> 
         return adv
 
     if test == "velocity_step" and mode == "PIV":
-        if g("KP"):
+        if g("KP[1]"):
             adv.warnings.append("בבדיקת צעד מהירות היצרן מכבה את לולאת המיקום (KP=0). ב-PRM הזה KP אינו 0, "
                                 "ולכן ההמלצות ל-KD/KI פחות מדויקות.")
         s = an.step
@@ -129,14 +155,14 @@ def advise(mode: str, test: str, gains: dict[str, int | None], an: Analysis) -> 
         adv.findings.append(f"תגובת המהירות: חריגה {s.overshoot_pct:.0f}%, ריסון ζ≈{_fmt_z(s.damping)}, "
                             f"תנודות {s.oscillations}" + (f" ב-{s.osc_freq:.0f}Hz" if s.osc_freq else ""))
         if s.oscillations >= 6 or (s.damping is not None and s.damping < 0.15):
-            add("KD", 0.6, "לולאת המהירות קרובה לגבול היציבות (תנודות כמעט בלי דעיכה). "
+            add("KD", ALL, 0.6, "לולאת המהירות קרובה לגבול היציבות (תנודות כמעט בלי דעיכה). "
                            "לפי המדריך, KD צריך להיות פי 3-4 מתחת לגבול היציבות.")
         elif s.damping is None or s.damping > 0.6:
             f = 1.5 if s.steady_error_pct > 2 else 1.3
-            add("KI", f, f"התגובה מרוסנת מדי ואיטית (ζ {_fmt_z(s.damping)}). לפי המדריך מעלים KI עד ריסון "
+            add("KI", ALL, f, f"התגובה מרוסנת מדי ואיטית (ζ {_fmt_z(s.damping)}). לפי המדריך מעלים KI עד ריסון "
                          f"של פחות מ-0.4 בצעד מהירות.")
         elif s.damping < 0.25:
-            add("KI", 0.8, f"ריסון נמוך (ζ≈{s.damping:.2f}): הרבה חריגה בצעד המהירות. מורידים KI מעט.")
+            add("KI", ALL, 0.8, f"ריסון נמוך (ζ≈{s.damping:.2f}): הרבה חריגה בצעד המהירות. מורידים KI מעט.")
         else:
             adv.findings.append("לולאת המהירות נראית טובה. השלב הבא לפי המדריך: להחזיר ולכייל את KP "
                                 "בצעדי מיקום קטנים.")
@@ -151,22 +177,22 @@ def advise(mode: str, test: str, gains: dict[str, int | None], an: Analysis) -> 
                             + (f", התייצבות {s.settling_time * 1000:.0f}ms" if s.settling_time is not None else
                                ", לא התייצב עד סוף ההקלטה"))
         if mode == "PID" and s.osc_freq and s.osc_freq > 40 and s.oscillations >= 4:
-            add("KD", 0.8, f"תנודה מהירה ({s.osc_freq:.0f}Hz): ב-PID זה בדרך כלל KD גבוה מדי.")
+            add("KD", ALL, 0.8, f"תנודה מהירה ({s.osc_freq:.0f}Hz): ב-PID זה בדרך כלל KD גבוה מדי.")
         if s.overshoot_pct > 25 or (s.damping is not None and s.damping < 0.3) or s.oscillations >= 4:
             if mode == "PID" and s.oscillations < 4:
-                add("KD", 1.25, "חריגה גדולה מעבר ליעד עם מעט תנודות: ב-PID מוסיפים ריסון (KD).")
-            add("KP", 0.75, "חריגה ותנודות סביב היעד: KP גבוה מדי. במדריך, הורדת KP מ-120 ל-60 העלימה "
+                add("KD", ALL, 1.25, "חריגה גדולה מעבר ליעד עם מעט תנודות: ב-PID מוסיפים ריסון (KD).")
+            add("KP", ALL, 0.75, "חריגה ותנודות סביב היעד: KP גבוה מדי. במדריך, הורדת KP מ-120 ל-60 העלימה "
                             "תנודות דומות. לולאת המיקום צריכה להיות איטית לפחות פי 2 מלולאת המהירות.")
         elif s.overshoot_pct > 10:
-            add("KP", 0.85, "חריגה בינונית מעבר ליעד. הורדה קטנה של KP תרגיע אותה.")
+            add("KP", ALL, 0.85, "חריגה בינונית מעבר ליעד. הורדה קטנה של KP תרגיע אותה.")
         elif s.overshoot_pct < 2:
-            add("KP", 1.2, "הציר מגיע ליעד בלי שום חריגה (מרוסן מאוד). אם רוצים הגעה מהירה יותר, יש מקום "
+            add("KP", ALL, 1.2, "הציר מגיע ליעד בלי שום חריגה (מרוסן מאוד). אם רוצים הגעה מהירה יותר, יש מקום "
                            "להעלות KP. אם המהירות הנוכחית מספיקה, אפשר להשאיר.")
         if abs(s.steady_error_pct) > 1:
-            add("KI", 1.25, f"נשארת שגיאה קבועה של {s.steady_error_pct:.1f}% מהצעד: מעלים KI "
+            add("KI", ALL, 1.25, f"נשארת שגיאה קבועה של {s.steady_error_pct:.1f}% מהצעד: מעלים KI "
                             f"(ובודקים ש-IS לא נמוך מדי).")
         if mode == "PID" and s.oscillations >= 6 and s.overshoot_pct < 5:
-            add("KI", 0.75, "תנודה קטנה ומתמשכת סביב היעד (Limit Cycle): KI גבוה מדי, או חיכוך/משחק במכניקה.")
+            add("KI", ALL, 0.75, "תנודה קטנה ומתמשכת סביב היעד (Limit Cycle): KI גבוה מדי, או חיכוך/משחק במכניקה.")
         if not adv.changes:
             adv.findings.append("התגובה נראית טובה. אין צורך לשנות.")
     else:  # point-to-point move judged from the position error
@@ -197,20 +223,28 @@ def _move_advice(mv, adv: Advice, add) -> None:
         + (f"התייצבות תוך {mv.settle_after_end * 1000:.0f}ms" if mv.settle_after_end is not None else "לא התייצב")
         + f", שגיאה סופית {mv.final_error:.0f} (סף {mv.tolerance:.0f})"
         + (f", תנודה {mv.residual_freq:.1f}Hz" if mv.residual_freq else ""))
-    if mv.sustained:
-        add("KP", 0.7, "הציר ממשיך להתנדנד עד סוף העמידה. מתחילים בהורדת KP.")
-    elif mv.oscillations >= 3:
-        add("KP", 0.8, "יש תנודה אחרי העצירה: KP גבוה מדי (לולאת מיקום מהירה מדי).")
+    stop_note = " משנים רק את [2] ו-[3] (אחרי סוף התנועה ובעמידה). [1] בזמן תנועה נשאר כמו שהוא."
+    slow = mv.residual_freq is not None and mv.residual_freq < 1.0
+    wobbles = mv.sustained or mv.oscillations >= 3
+    if wobbles and slow:
+        add("KI", STOP, 0.7, f"נדנוד איטי אחרי העצירה ({mv.residual_freq:.2f}Hz, מחזור של כ-"
+                             f"{1 / mv.residual_freq:.0f} שניות). תנודה איטית כזו נגרמת בדרך כלל מהאינטגרל (KI) "
+                             f"יחד עם חיכוך, ולא מ-KP: האינטגרל מצטבר עד שהציר קופץ ועובר את המטרה. מורידים KI."
+                             + stop_note + " אם אין שיפור, מחזירים את KI ומנסים להוריד KP[2]/KP[3].")
+    elif mv.sustained:
+        add("KP", STOP, 0.7, "הציר ממשיך להתנדנד עד סוף העמידה. מתחילים בהורדת KP." + stop_note)
+    elif wobbles:
+        add("KP", STOP, 0.8, "יש תנודה אחרי העצירה: KP גבוה מדי (לולאת מיקום מהירה מדי)." + stop_note)
     elif mv.settle_after_end is not None and mv.settle_after_end > 0.3:
-        add("KP", 1.2, f"הציר מתייצב לאט ({mv.settle_after_end * 1000:.0f}ms) ובלי תנודה: יש מקום להעלות KP.")
-    if abs(mv.final_error) > 2 * mv.tolerance:
-        add("KI", 1.25, f"נשארת שגיאת מיקום של {mv.final_error:.0f} ספירות בעמידה: מעלים KI.")
+        add("KP", STOP, 1.2, f"הציר מתייצב לאט ({mv.settle_after_end * 1000:.0f}ms) ובלי תנודה: יש מקום להעלות KP."
+                             + stop_note)
+    if abs(mv.final_error) > 2 * mv.tolerance and not (wobbles and slow):
+        add("KI", STOP, 1.25, f"נשארת שגיאת מיקום של {mv.final_error:.0f} ספירות בעמידה: מעלים KI." + stop_note)
 
 
 def _full(mode: str, gains: dict, an: Analysis, adv: Advice) -> Advice:
     """Speed sensor first (the velocity loop runs on it), then the position loop."""
     g = lambda k: gains.get(k)  # noqa: E731
-    add = lambda p, f, why: adv.changes.append(Change(p, g(p), f, why))  # noqa: E731
     sensor_bad = False
     adv.findings.append("שלב 1: חיישן המהירות מול האנקודר")
     tm = an.tacho
@@ -224,9 +258,9 @@ def _full(mode: str, gains: dict, an: Analysis, adv: Advice) -> Advice:
         if err > 0.02:
             sensor_bad = True
             if g("AG") is not None:
-                add("AG", 1.0 / abs(tm.gain),
+                adv.changes.append(Change("AG", g("AG"), 1.0 / abs(tm.gain),
                     f"החיישן קורא {abs(tm.gain) * 100:.1f}% ממהירות האנקודר. לפי המדריך (סעיף 3.2) הם צריכים להיות "
-                    f"שווים. ההגבר הוא AG×2^-AF" + (f" (AF={g('AF')})" if g("AF") is not None else "") + ".")
+                    f"שווים. ההגבר הוא AG×2^-AF" + (f" (AF={g('AF')})" if g("AF") is not None else "") + "."))
             else:
                 adv.findings.append("כדי לחשב AG חדש טען את קובץ ה-PRM.")
         else:
@@ -242,12 +276,12 @@ def _full(mode: str, gains: dict, an: Analysis, adv: Advice) -> Advice:
     if cmd and cmd.ok:
         adv.findings.append(f"פקודת הדרייבר: שיא {cmd.peak:.0f}, רוויה {cmd.saturated_pct:.1f}%, רעש {cmd.noise_ratio:.2f}")
     loop = Advice()
-    loop_add = lambda p, f, why: loop.changes.append(Change(p, g(p), f, why))  # noqa: E731
+    loop_add = lambda p, sets, f, why: loop.changes.append(gain_change(gains, p, sets, f, why))  # noqa: E731
     if cmd and cmd.ok and cmd.saturated_pct > 2:
         adv.findings.append("הפקודה למנוע ברוויה: הקטן מהירות או תאוצה והקלט שוב לפני שינוי כיול.")
     else:
         if cmd and cmd.ok and cmd.noise_ratio > 0.15:
-            loop_add("KD", 0.8, "פקודת הדרייבר רועשת: בדרך כלל KD גבוה מדי.")
+            loop_add("KD", ALL, 0.8, "פקודת הדרייבר רועשת: בדרך כלל KD גבוה מדי.")
         if an.move and an.move.ok:
             _move_advice(an.move, loop, loop_add)
         elif an.step and an.step.ok:
@@ -261,7 +295,7 @@ def _full(mode: str, gains: dict, an: Analysis, adv: Advice) -> Advice:
         if loop.changes:
             adv.findings.append("השינויים בלולאה ייבדקו אחרי תיקון החיישן: לולאת המהירות עובדת לפי החיישן, ולכן "
                                 "תקן קודם את AG, הקלט שוב ואז נבדוק את KP/KI/KD. מה שנראה כרגע: "
-                                + "; ".join(f"{c.param} {c.percent:+d}%" for c in loop.changes))
+                                + "; ".join(f"{c.label} {c.percent:+d}%" for c in loop.changes))
     else:
         adv.changes += loop.changes
         if not loop.changes and an.move and an.move.ok:

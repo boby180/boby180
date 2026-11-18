@@ -25,7 +25,8 @@ def second_order(zeta, wn=2 * math.pi * 20, t_end=0.5, n=4000, amp=1000.0, delay
     return t, y * amp, ref
 
 
-GAINS = {"KP": 100, "KI": 200, "KD": 80, "IS": 32767}
+FULL_GAINS = {f"{k}[{i}]": v for k, v in (("KP", 20), ("KI", 50), ("KD", 8000)) for i in (1, 2, 3)} | {"AG": -17240, "AF": 11}
+GAINS = {f"{k}[{i}]": v for k, v in (("KP", 100), ("KI", 200), ("KD", 80)) for i in (1, 2, 3)} | {"IS": 32767}
 
 
 def test_damping_estimate_matches_known_zeta():
@@ -39,13 +40,13 @@ def test_damping_estimate_matches_known_zeta():
 def test_position_step_underdamped_lowers_kp():
     t, y, ref = second_order(0.15)
     adv = advise("PIV", "position_step", GAINS, Analysis(step=step_metrics(t, y, ref)))
-    assert adv.primary.param == "KP" and adv.primary.new == 75
+    assert adv.primary.param == "KP[1]" and adv.primary.new == 75
 
 
 def test_position_step_overdamped_raises_kp():
     t, y, ref = second_order(1.0, wn=2 * math.pi * 3)
     adv = advise("PIV", "position_step", GAINS, Analysis(step=step_metrics(t, y, ref)))
-    assert adv.primary.param == "KP" and adv.primary.new == 120
+    assert adv.primary.param == "KP[1]" and adv.primary.new == 120
 
 
 def test_good_response_needs_no_change():
@@ -56,11 +57,11 @@ def test_good_response_needs_no_change():
 
 def test_velocity_step_overdamped_raises_ki_and_unstable_lowers_kd():
     t, y, ref = second_order(1.0, wn=2 * math.pi * 5)
-    adv = advise("PIV", "velocity_step", {**GAINS, "KP": 0}, Analysis(step=step_metrics(t, y, ref)))
-    assert adv.primary.param == "KI" and adv.primary.factor > 1
+    adv = advise("PIV", "velocity_step", {**GAINS, "KP[1]": 0}, Analysis(step=step_metrics(t, y, ref)))
+    assert adv.primary.param == "KI[1]" and adv.primary.factor > 1
     t, y, ref = second_order(0.05)
-    adv = advise("PIV", "velocity_step", {**GAINS, "KP": 0}, Analysis(step=step_metrics(t, y, ref)))
-    assert adv.primary.param == "KD" and adv.primary.new == 48
+    adv = advise("PIV", "velocity_step", {**GAINS, "KP[1]": 0}, Analysis(step=step_metrics(t, y, ref)))
+    assert adv.primary.param == "KD[1]" and adv.primary.new == 48
 
 
 def test_saturated_command_stops_advice():
@@ -76,7 +77,7 @@ def test_move_with_ringing_lowers_kp():
     ring = (t >= 0.4) * 150 * np.exp(-(t - 0.4) * 3) * np.sin(2 * np.pi * 15 * (t - 0.4))
     m = move_metrics(t, pe + ring, moving=t < 0.4)
     adv = advise("PIV", "move", GAINS, Analysis(move=m))
-    assert adv.primary.param == "KP" and adv.primary.factor < 1
+    assert adv.primary.param == "KP[2]" and adv.primary.factor < 1
 
 
 def test_prm_parse_and_write(tmp_path):
@@ -168,7 +169,7 @@ def test_full_test_fixes_the_speed_sensor_first():
     from tune4164.analysis import tacho_metrics
     t, vref, pe, vel, tacho = _full_recording(0.90, 0.25)
     an = Analysis(tacho=tacho_metrics(vel, tacho), move=move_metrics(t, pe, np.abs(vref) > 0, vref=vref))
-    adv = advise("PIV", "full", {"KP": 20, "KI": 50, "KD": 8000, "AG": -17240, "AF": 11}, an)
+    adv = advise("PIV", "full", FULL_GAINS, an)
     assert [c.param for c in adv.changes] == ["AG"]                 # loop changes wait for the sensor fix
     assert any("אחרי תיקון החיישן" in f for f in adv.findings)
     assert abs(an.move.following_neg + 140) < 1 and abs(an.move.following_pos - 115) < 1
@@ -179,9 +180,9 @@ def test_full_test_with_good_sensor_tunes_the_loop():
     from tune4164.analysis import tacho_metrics
     t, vref, pe, vel, tacho = _full_recording(1.0, 0.25)
     an = Analysis(tacho=tacho_metrics(vel, tacho), move=move_metrics(t, pe, np.abs(vref) > 0, vref=vref))
-    adv = advise("PIV", "full", {"KP": 20, "KI": 50, "KD": 8000, "AG": -17240, "AF": 11}, an)
+    adv = advise("PIV", "full", FULL_GAINS, an)
     params = [c.param for c in adv.changes]
-    assert "AG" not in params and params[0] == "KP" and "KI" in params
+    assert "AG" not in params and params[0] == "KP[2]" and "KI[2]" in params
 
 
 def test_full_loop_change_carries_numbers():
@@ -189,3 +190,25 @@ def test_full_loop_change_carries_numbers():
     c = Change("KP", 20, 1.2, "slow settle")
     assert (c.old, c.new) == (20, 24)
     assert Change("KI", 50, 1.25, "").new in (62, 63)  # 62.5 rounds to even
+
+
+def test_after_stop_changes_sets_2_and_3_only():
+    from tune4164.advise import STOP, gain_change
+    c = gain_change({"KP[1]": 14, "KP[2]": 14, "KP[3]": 12}, "KP", STOP, 0.7, "")
+    assert c.items() == [("KP[2]", 14, 10), ("KP[3]", 12, 8)] and c.complete
+
+
+def test_slow_wobble_after_stop_points_to_ki():
+    from tune4164.advise import Advice, _move_advice, gain_change
+    from tune4164.analysis import MoveMetrics
+    mv = MoveMetrics(ok=True, has_stop=True, stop_time=25.8, end_error_peak=73, settle_after_end=None,
+                     final_error=-7, tolerance=45, residual_freq=0.1, oscillations=4, sustained=True)
+    adv = Advice()
+    g = {"KP[2]": 14, "KP[3]": 14, "KI[2]": 20, "KI[3]": 20}
+    _move_advice(mv, adv, lambda p, sets, f, why: adv.changes.append(gain_change(g, p, sets, f, why)))
+    assert [k for k, _, _ in adv.primary.items()] == ["KI[2]", "KI[3]"] and adv.primary.new == 14
+
+
+def test_prm_reads_three_gain_sets():
+    prm = parse_prm("XKP[1]=20\nXKP[2]=24\nXKP[3]=30\n")
+    assert [prm.get("X", f"KP[{i}]") for i in (1, 2, 3)] == [20, 24, 30]
