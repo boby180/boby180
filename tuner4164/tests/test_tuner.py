@@ -283,13 +283,43 @@ def test_history_worse_steps_back_half_way():
 
 
 def test_history_file_round_trip(tmp_path):
-    from tune4164.history import History
+    from tune4164.history import DEFAULT_UNIT, History
     h = History(tmp_path / "h.json")
     h.put(_entry("a", {"KP[1]": 1}, {"settle": "inf"}))
     h.put(_entry("b", {"KP[1]": 2}, {"settle": 0.4}))
     h.put(_entry("b", {"KP[1]": 3}, {"settle": 0.3}))          # analysing the same recording again replaces it
     h2 = History(tmp_path / "h.json")
-    assert [e["recording"] for e in h2.for_axis("Y")] == ["a", "b"]
-    assert h2.previous("Y", "b")["recording"] == "a"
-    h2.clear("Y")
-    assert History(tmp_path / "h.json").for_axis("Y") == []
+    assert [e["recording"] for e in h2.for_axis(DEFAULT_UNIT, "Y")] == ["a", "b"]
+    assert h2.previous(DEFAULT_UNIT, "Y", "b")["recording"] == "a"
+    h2.clear(DEFAULT_UNIT, "Y")
+    assert History(tmp_path / "h.json").for_axis(DEFAULT_UNIT, "Y") == []
+
+
+def test_units_keep_separate_histories(tmp_path):
+    from tune4164.history import History
+    h = History(tmp_path / "h.json")
+    h.put({**_entry("r1", {}, {}), "unit": "SN100"})
+    h.add_unit("SN200")
+    h.put({**_entry("r1", {}, {}), "unit": "SN200"})            # same file name, other rotator: both kept
+    h.put({**_entry("r2", {}, {}), "unit": "SN200"})
+    h2 = History(tmp_path / "h.json")
+    assert [e["recording"] for e in h2.for_axis("SN100", "Y")] == ["r1"]
+    assert [e["recording"] for e in h2.for_axis("SN200", "Y")] == ["r1", "r2"]
+    assert h2.previous("SN100", "Y", "r9")["recording"] == "r1"
+    h2.clear("SN200", "Y")
+    assert [e["recording"] for e in History(tmp_path / "h.json").for_axis("SN100", "Y")] == ["r1"]
+    assert "SN200" in History(tmp_path / "h.json").units()
+
+
+def test_old_history_without_units_goes_to_default(tmp_path):
+    import json
+    from tune4164.history import DEFAULT_UNIT, History
+    (tmp_path / "h.json").write_text(json.dumps({"entries": [_entry("old", {}, {})]}), encoding="utf-8")
+    assert [e["recording"] for e in History(tmp_path / "h.json").for_axis(DEFAULT_UNIT, "Y")] == ["old"]
+
+
+def test_fingerprint_spots_another_controller():
+    from tune4164.history import fingerprint, other_unit
+    a = fingerprint(parse_prm("YPA[43]=8000000\nYPA[52]=-9600\nYHL=2000000000\n"), "Y")
+    b = fingerprint(parse_prm("YPA[43]=12000000\nYPA[52]=-14400\nYHL=2000000000\n"), "Y")
+    assert other_unit(a, a) == [] and other_unit(a, b) == ["PA[43]", "PA[52]"]

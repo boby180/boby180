@@ -13,12 +13,12 @@ from PySide6.QtCore import QSettings, QStandardPaths, Qt
 from PySide6.QtGui import QColor, QPalette
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QFileDialog, QFormLayout, QGroupBox, QHBoxLayout, QHeaderView, QLabel,
-    QDialog, QDialogButtonBox, QMainWindow, QMessageBox, QPushButton, QTabWidget, QSpinBox, QSplitter, QTableWidget, QTableWidgetItem, QTextBrowser, QVBoxLayout,
+    QDialog, QDialogButtonBox, QInputDialog, QMainWindow, QMessageBox, QPushButton, QTabWidget, QSpinBox, QSplitter, QTableWidget, QTableWidgetItem, QTextBrowser, QVBoxLayout,
     QWidget,
 )
 
 from .advise import SET_NAMES, TESTS, Advice, advise
-from .history import History, advice_fields, compare, make_entry, step_back
+from .history import History, advice_fields, compare, fingerprint, make_entry, other_unit, step_back
 from .analysis import Analysis, command_metrics, move_metrics, moving_from_velocity, step_metrics, tacho_metrics
 from .prm import AXES, TUNING_KEYS, PrmFile, load_prm, prm_text
 from .recording import SAMPLE_TIME_4M, Recording, load_recording
@@ -197,6 +197,18 @@ class MainWindow(QMainWindow):
         for key, label in TESTS.items():
             self.test.addItem(label, key)
         self.test.setCurrentIndex(0)  # full test
+        self.unit = QComboBox()
+        self.unit.addItems(self.history.units())
+        last = self.prefs.value("unit", "")
+        if last in self.history.units():
+            self.unit.setCurrentText(last)
+        self.unit.currentTextChanged.connect(self._unit_changed)
+        new_unit = QPushButton("מסובב חדש...")
+        new_unit.clicked.connect(self.new_unit)
+        urow = QHBoxLayout()
+        urow.addWidget(self.unit, 1)
+        urow.addWidget(new_unit)
+        form.addRow("מסובב / בקר:", urow)
         form.addRow("ציר:", self.axis)
         form.addRow("מבנה בקרה:", self.mode)
         form.addRow("סוג הבדיקה:", self.test)
@@ -251,7 +263,7 @@ class MainWindow(QMainWindow):
         self.hist_table.setHorizontalHeaderLabels(HIST_COLS)
         self.hist_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
         self.hist_table.setEditTriggers(QTableWidget.NoEditTriggers)
-        new_cal = QPushButton("התחל כיול חדש לציר הזה (מחיקת הזיכרון שלו)")
+        new_cal = QPushButton("מחק את הזיכרון של הציר הזה במסובב הזה")
         new_cal.clicked.connect(self.new_calibration)
         hl.addWidget(self.hist_label)
         hl.addWidget(self.hist_table, 1)
@@ -308,8 +320,14 @@ class MainWindow(QMainWindow):
                               + (f". {len(self.prm.skipped)} שורות לא זוהו" if self.prm.skipped else ""))
         self._show_files()
         had_advice = self.advice is not None
-        self._axis_changed(self.axis.currentText())
-        if had_advice and self.rec is not None:
+        axis = self.axis.currentText()
+        saved = self.history.get(self.unit.currentText(), axis, self._rec_key()) if self.rec is not None else None
+        foreign = saved is not None and other_unit(saved.get("fingerprint"), fingerprint(self.prm, axis))
+        self._axis_changed(axis)
+        if foreign:
+            self.result.setHtml("<p><b>נטען PRM שנראה של בקר או מסובב אחר מההקלטה שפתוחה.</b> פתח את ההקלטה של הבקר "
+                                "הזה ולחץ <b>נתח והמלץ</b>. אם זה מסובב חדש, בחר \"מסובב חדש...\" לפני כן.</p>")
+        elif had_advice and self.rec is not None:
             self.analyze()  # refresh: the analysis may have run before the gains were known
         self._show_files()
 
@@ -370,7 +388,7 @@ class MainWindow(QMainWindow):
             self.comparison = None
             self.copy_btn.setEnabled(False)
             self.save_btn.setEnabled(False)
-            self.result.setHtml(f"<p>נבחר ציר {axis}. בדוק שהעמודות שייכות לציר הזה ולחץ <b>נתח והמלץ</b>.</p>")
+            self.result.setHtml(f"<p>נבחר {html.escape(self.unit.currentText())}, ציר {axis}. בדוק שהעמודות שייכות לציר הזה ולחץ <b>נתח והמלץ</b>.</p>")
 
     # ---- analysis ----
     def _col(self, role: str) -> np.ndarray | None:
@@ -468,10 +486,30 @@ class MainWindow(QMainWindow):
         entry = make_entry(axis, test, gains, an, self.advice, self._rec_key(),
                            self.rec.path.name if self.rec.path else "?",
                            self.prm.path.name if self.prm.path else "", top)
-        prev = self.history.previous(axis, entry["rec_key"])
+        unit = self.unit.currentText()
+        entry["unit"] = unit
+        entry["fingerprint"] = fingerprint(self.prm, axis)
+        prev = self.history.previous(unit, axis, entry["rec_key"])
+        # the same recording saved before (a PRM loaded after it) or the previous recording of this rotator
+        ref = self.history.get(unit, axis, entry["rec_key"]) or prev
+        diff = other_unit(ref.get("fingerprint"), entry["fingerprint"]) if ref else []
+        if diff:
+            choice = self._ask_other_unit(unit, diff)
+            if choice == "new":
+                if self.new_unit():
+                    return self._remember(test, gains, an, vref, vel)   # saved under the new rotator
+                choice = "skip"
+            if choice == "skip":
+                self.comparison = None
+                self.advice.warnings.insert(0, f"ההקלטה לא נשמרה בזיכרון של \"{unit}\" ולא הושוותה, כי ה-PRM נראה "
+                                               f"של בקר אחר (שונים: {', '.join(diff)}).")
+                return
         self.comparison = compare(prev, entry) if prev else None
         if self.comparison:
-            back = step_back(self.comparison, gains)
+            if diff:
+                self.comparison.notes.insert(0, f"נשמר ל-\"{unit}\" למרות שה-PRM שונה מההקלטה הקודמת "
+                                                f"({', '.join(diff)}).")
+            back = step_back(self.comparison, gains) if not diff else None
             if back is not None:
                 undone = {k for k, _, _ in back.items()}
                 self.advice.changes = [back] + [c for c in self.advice.changes
@@ -483,11 +521,11 @@ class MainWindow(QMainWindow):
         self._fill_history()
 
     def _fill_history(self) -> None:
-        axis = self.axis.currentText()
-        rows = self.history.for_axis(axis)
-        self.hist_label.setText(f"ציר {axis}: {len(rows)} הקלטות בזיכרון. כל ניתוח נשמר כאן אוטומטית, וההקלטה הבאה "
-                                f"של אותו ציר מושווית לקודמת. לכל ציר רצף נפרד באותו קובץ, וצירים לא דורסים זה את זה. "
-                                f"כשמתחילים מכונה או ציר מחדש, לוחצים על הכפתור למטה.<br>"
+        axis, unit = self.axis.currentText(), self.unit.currentText()
+        rows = self.history.for_axis(unit, axis)
+        self.hist_label.setText(f"<b>{html.escape(unit)}, ציר {axis}</b>: {len(rows)} הקלטות בזיכרון. כל ניתוח נשמר כאן אוטומטית, וההקלטה הבאה "
+                                f"של אותו מסובב ואותו ציר מושווית לקודמת. לכל מסובב ולכל ציר יש רצף נפרד, ואף אחד לא דורס אחר. "
+                                f"כשעוברים לבקר או מסובב אחר, בוחרים אותו (או \"מסובב חדש...\") בצד ימין.<br>"
                                 f"<span style='color:#5d6b7a'>קובץ הזיכרון: {html.escape(str(self.history.path))}</span>")
         self.hist_table.setRowCount(len(rows))
         prev = None
@@ -511,12 +549,43 @@ class MainWindow(QMainWindow):
             prev = e
         self.hist_table.scrollToBottom()
 
+    def _ask_other_unit(self, unit: str, diff: list[str]) -> str:
+        box = QMessageBox(self)
+        box.setWindowTitle("בקר או מסובב אחר?")
+        box.setText(f"ה-PRM שטעון נראה של בקר או מסובב אחר מההקלטה הקודמת של \"{unit}\".\n"
+                    f"ערכים שונים: {', '.join(diff)}.\n\nכדי לא לערבב את ההיסטוריה של \"{unit}\":")
+        new = box.addButton("מסובב חדש...", QMessageBox.AcceptRole)
+        skip = box.addButton("לא לשמור בזיכרון", QMessageBox.RejectRole)
+        keep = box.addButton(f"זה אותו מסובב, לשמור ל-\"{unit}\"", QMessageBox.DestructiveRole)
+        box.setDefaultButton(new)
+        box.exec()
+        return {new: "new", skip: "skip", keep: "keep"}.get(box.clickedButton(), "skip")
+
+    def new_unit(self) -> bool:
+        name, ok = QInputDialog.getText(self, "מסובב חדש", "שם המסובב או הבקר (למשל מספר סידורי):")
+        name = name.strip()
+        if not ok or not name:
+            return False
+        self.history.add_unit(name)
+        if self.unit.findText(name) < 0:
+            self.unit.addItem(name)
+        self.unit.blockSignals(True)           # keep the analysis on screen; only the history follows
+        self.unit.setCurrentText(name)
+        self.unit.blockSignals(False)
+        self.prefs.setValue("unit", name)
+        self._fill_history()
+        return True
+
+    def _unit_changed(self, unit: str) -> None:
+        self.prefs.setValue("unit", unit)
+        self._axis_changed(self.axis.currentText())
+
     def new_calibration(self) -> None:
-        axis = self.axis.currentText()
-        if QMessageBox.question(self, "כיול חדש", f"למחוק את כל הזיכרון של ציר {axis} ולהתחיל כיול חדש?") \
-                != QMessageBox.Yes:
+        axis, unit = self.axis.currentText(), self.unit.currentText()
+        if QMessageBox.question(self, "מחיקת זיכרון", f"למחוק את הזיכרון של ציר {axis} ב-\"{unit}\" בלבד?\n"
+                                f"מסובבים וצירים אחרים לא יימחקו.") != QMessageBox.Yes:
             return
-        self.history.clear(axis)
+        self.history.clear(unit, axis)
         self.comparison = None
         self._fill_history()
 

@@ -171,41 +171,86 @@ def step_back(comp: Comparison, gains: dict) -> Change | None:
                   extra)
 
 
+DEFAULT_UNIT = "מסובב 1"
+# Settings that belong to the machine, not to the tuning: if they differ, the PRM is from another unit.
+FINGERPRINT_KEYS = ["PA[43]", "PA[52]", "PA[62]", "HL", "LL", "CL", "PL", "MP"]
+
+
+def fingerprint(prm, axis: str) -> dict:
+    return {k: v for k in FINGERPRINT_KEYS if (v := prm.get(axis, k)) is not None}
+
+
+def other_unit(prev_fp: dict | None, fp: dict | None) -> list[str]:
+    """Keys that differ between two fingerprints (empty = looks like the same unit)."""
+    if not prev_fp or not fp:
+        return []
+    diff = [k for k in FINGERPRINT_KEYS if k in prev_fp and k in fp and prev_fp[k] != fp[k]]
+    # bits per degree is fixed by the mechanics; one other setting (e.g. max speed) may be changed on purpose
+    return diff if "PA[43]" in diff or len(diff) >= 2 else []
+
+
 class History:
+    """All units (rotators / controllers) and axes in one file; every (unit, axis) is its own sequence."""
+
     def __init__(self, path: str | Path):
         self.path = Path(path)
         self.entries: list[dict] = []
+        self.extra_units: list[str] = []
         try:
-            self.entries = json.loads(self.path.read_text(encoding="utf-8")).get("entries", [])
+            data = json.loads(self.path.read_text(encoding="utf-8"))
+            self.entries = data.get("entries", [])
+            self.extra_units = data.get("units", [])
         except (OSError, ValueError, AttributeError):
             self.entries = []
+        for e in self.entries:          # files from 0.4.x had no units
+            e.setdefault("unit", DEFAULT_UNIT)
 
     def save(self) -> None:
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
-            self.path.write_text(json.dumps({"entries": self.entries}, ensure_ascii=False, indent=1), encoding="utf-8")
+            self.path.write_text(json.dumps({"units": self.extra_units, "entries": self.entries},
+                                            ensure_ascii=False, indent=1), encoding="utf-8")
         except OSError:
             pass
 
-    def for_axis(self, axis: str) -> list[dict]:
-        return [e for e in self.entries if e.get("axis") == axis]
+    def units(self) -> list[str]:
+        out = []
+        for u in [DEFAULT_UNIT] + [e["unit"] for e in self.entries] + self.extra_units:
+            if u not in out:
+                out.append(u)
+        return out
 
-    def previous(self, axis: str, rec_key: str) -> dict | None:
-        """The last entry of this axis made from a different recording."""
+    def add_unit(self, name: str) -> None:
+        if name not in self.units():
+            self.extra_units.append(name)
+            self.save()
+
+    def for_axis(self, unit: str, axis: str) -> list[dict]:
+        return [e for e in self.entries if e.get("unit") == unit and e.get("axis") == axis]
+
+    def previous(self, unit: str, axis: str, rec_key: str) -> dict | None:
+        """The last entry of this unit and axis made from a different recording."""
         for e in reversed(self.entries):
-            if e.get("axis") == axis and e.get("rec_key") != rec_key:
+            if e.get("unit") == unit and e.get("axis") == axis and e.get("rec_key") != rec_key:
+                return e
+        return None
+
+    def get(self, unit: str, axis: str, rec_key: str) -> dict | None:
+        for e in self.entries:
+            if (e.get("unit"), e.get("axis"), e.get("rec_key")) == (unit, axis, rec_key):
                 return e
         return None
 
     def put(self, entry: dict) -> None:
-        """Add, or replace the entry of the same recording and axis (analysing it again)."""
+        """Add, or replace the entry of the same recording, unit and axis (analysing it again)."""
+        entry.setdefault("unit", DEFAULT_UNIT)
         for i, e in enumerate(self.entries):
-            if e.get("axis") == entry["axis"] and e.get("rec_key") == entry["rec_key"]:
+            if (e.get("unit"), e.get("axis"), e.get("rec_key")) == (entry["unit"], entry["axis"], entry["rec_key"]):
                 del self.entries[i]
                 break
         self.entries.append(entry)
         self.save()
 
-    def clear(self, axis: str) -> None:
-        self.entries = [e for e in self.entries if e.get("axis") != axis]
+    def clear(self, unit: str, axis: str) -> None:
+        self.entries = [e for e in self.entries if not (e.get("unit") == unit and e.get("axis") == axis)]
         self.save()
