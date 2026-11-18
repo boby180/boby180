@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import hashlib
 import html
 import re
+import shutil
 import sys
+import tempfile
 from pathlib import Path
 
 import numpy as np
@@ -18,9 +21,10 @@ from PySide6.QtWidgets import (
 )
 
 from .advise import SET_NAMES, TESTS, Advice, advise
-from .history import History, advice_fields, compare, fingerprint, make_entry, other_unit, step_back
+from .history import (History, advice_fields, compare, extract_run, fingerprint, load_run, make_entry, other_unit,
+                      run_document, step_back)
 from .analysis import Analysis, command_metrics, move_metrics, moving_from_velocity, step_metrics, tacho_metrics
-from .prm import AXES, TUNING_KEYS, PrmFile, load_prm, prm_text
+from .prm import AXES, TUNING_KEYS, PrmFile, load_prm, parse_prm, prm_text
 from .recording import SAMPLE_TIME_4M, Recording, load_recording
 from .version import __version__
 
@@ -86,6 +90,10 @@ def _fmt_metric(v, unit: str) -> str:
     if unit == "%":
         return f"{v:.2f}%"
     return f"{v:.0f}" if abs(v) >= 10 or float(v).is_integer() else f"{v:.2f}"
+
+
+def json_key(e: dict) -> str:
+    return f"{e.get('unit')}|{e.get('axis')}|{e.get('rec_key')}"
 
 
 def default_history_path() -> Path:
@@ -226,7 +234,7 @@ class MainWindow(QMainWindow):
         form.addRow("RG (אם אין עמודת זמן):", self.rg)
         go = QPushButton("נתח והמלץ")
         go.setStyleSheet("QPushButton { background:#1f6fb3; color:white; font-weight:bold; padding:8px; border-radius:6px; }")
-        go.clicked.connect(self.analyze)
+        go.clicked.connect(lambda: self.analyze())
         form.addRow(go)
         lay.addWidget(setup)
         lay.addStretch(1)
@@ -263,11 +271,31 @@ class MainWindow(QMainWindow):
         self.hist_table.setHorizontalHeaderLabels(HIST_COLS)
         self.hist_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
         self.hist_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.hist_table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.hist_table.setSelectionMode(QTableWidget.SingleSelection)
+        self.hist_table.itemSelectionChanged.connect(self._hist_selected)
+        self._hist_rows: list[dict] = []
         new_cal = QPushButton("מחק את הזיכרון של הציר הזה במסובב הזה")
         new_cal.clicked.connect(self.new_calibration)
         hl.addWidget(self.hist_label)
         hl.addWidget(self.hist_table, 1)
         hrow = QHBoxLayout()
+        run_row = QHBoxLayout()
+        self.run_btns = []
+        for text, slot in (("שחזר ריצה", self.restore_selected),
+                           ("שמור את ה-PRM שלה...", self.save_selected_prm),
+                           ("השווה PRM לנוכחי", self.compare_selected_prm),
+                           ("ייצא JSON...", self.export_selected)):
+            b = QPushButton(text)
+            b.clicked.connect(slot)
+            b.setEnabled(False)
+            run_row.addWidget(b)
+            self.run_btns.append(b)
+        imp = QPushButton("ייבא JSON...")
+        imp.clicked.connect(self.import_run)
+        run_row.addWidget(imp)
+        run_row.addStretch(1)
+        hl.addLayout(run_row)
         hrow.addWidget(new_cal)
         hrow.addStretch(1)
         hl.addLayout(hrow)
@@ -328,7 +356,9 @@ class MainWindow(QMainWindow):
             self.result.setHtml("<p><b>נטען PRM שנראה של בקר או מסובב אחר מההקלטה שפתוחה.</b> פתח את ההקלטה של הבקר "
                                 "הזה ולחץ <b>נתח והמלץ</b>. אם זה מסובב חדש, בחר \"מסובב חדש...\" לפני כן.</p>")
         elif had_advice and self.rec is not None:
-            self.analyze()  # refresh: the analysis may have run before the gains were known
+            # refresh the screen (the analysis may have run before the gains were known), but never rewrite
+            # a saved run with a PRM it was not recorded with
+            self.analyze(remember=not (saved and saved.get("gains")))
         self._show_files()
 
     def open_recording(self) -> None:
@@ -417,7 +447,7 @@ class MainWindow(QMainWindow):
         name = self.cols["time"].currentText().lower()
         return t / 1000.0 if "ms" in name else t
 
-    def analyze(self) -> None:
+    def analyze(self, remember: bool = True) -> None:
         if self.rec is None:
             self.result.setHtml("<p style='color:#c62f2f'>טען קודם הקלטה.</p>")
             return
@@ -464,7 +494,12 @@ class MainWindow(QMainWindow):
         if cmd is not None:
             an.command = command_metrics(cmd, gains.get("TL") or None)
         self.advice = advise(self.mode.currentText(), test, gains, an)
-        self._remember(test, gains, an, vref, vel)
+        if remember:
+            self._remember(test, gains, an, vref, vel)
+        else:
+            self.comparison = None
+            self.advice.warnings.insert(0, "הניתוח רוענן עם ה-PRM שנטען עכשיו, אבל לא נשמר בזיכרון: ההקלטה הזו כבר "
+                                           "שמורה עם ה-PRM שהיה בזמן שלה.")
         self._plot(t, ref, act, pe, cmd, test, vel, tacho)
         self._show_advice()
 
@@ -517,6 +552,7 @@ class MainWindow(QMainWindow):
                 self.advice.status = "change"
             entry["verdict"] = self.comparison.verdict
             entry.update(advice_fields(self.advice))
+        self._archive(entry)
         self.history.put(entry)
         self._fill_history()
 
@@ -529,6 +565,7 @@ class MainWindow(QMainWindow):
                                 f"<span style='color:#5d6b7a'>קובץ הזיכרון: {html.escape(str(self.history.path))}</span>")
         self.hist_table.setRowCount(len(rows))
         prev = None
+        self._hist_rows = rows
         for r, e in enumerate(rows):
             m = e.get("metrics", {})
             changed = ""
@@ -561,6 +598,154 @@ class MainWindow(QMainWindow):
         box.exec()
         return {new: "new", skip: "skip", keep: "keep"}.get(box.clickedButton(), "skip")
 
+    # ---- run files: PRM + recording + analysis, to compare and restore ----
+    def _archive(self, entry: dict) -> None:
+        prm_text = rec_bytes = mtime = None
+        if self.prm.path:
+            try:
+                data = self.prm.path.read_bytes()
+                for enc in ("utf-8", "cp1255", "latin-1"):
+                    try:
+                        prm_text = data.decode(enc)
+                        break
+                    except UnicodeDecodeError:
+                        continue
+            except OSError:
+                pass
+        if self.rec and self.rec.path:
+            try:
+                rec_bytes = self.rec.path.read_bytes()
+                mtime = self.rec.path.stat().st_mtime
+            except OSError:
+                pass
+        doc = run_document(entry, self.prm.path.name if self.prm.path else "", prm_text,
+                           entry.get("recording", ""), rec_bytes, mtime)
+        self.history.save_run(entry, doc)
+
+    def _hist_selected(self) -> None:
+        e = self._selected_entry()
+        p = self.history.run_path(e) if e else None
+        for b in self.run_btns:
+            b.setEnabled(bool(p and p.exists()))
+
+    def _selected_entry(self) -> dict | None:
+        r = self.hist_table.currentRow()
+        return self._hist_rows[r] if 0 <= r < len(self._hist_rows) else None
+
+    def _selected_doc(self) -> dict | None:
+        e = self._selected_entry()
+        p = self.history.run_path(e) if e else None
+        if not p or not p.exists():
+            QMessageBox.information(self, "אין קובץ ריצה", "לשורה הזו אין קובץ ריצה שמור (נותחה לפני גרסה 0.6.0).")
+            return None
+        try:
+            return load_run(p)
+        except (OSError, ValueError) as ex:
+            QMessageBox.warning(self, "שגיאה", f"לא הצלחתי לקרוא את קובץ הריצה: {ex}")
+            return None
+
+    def restore_selected(self) -> None:
+        doc = self._selected_doc()
+        if doc:
+            self._open_doc(doc)
+
+    def _open_doc(self, doc: dict) -> None:
+        e = doc.get("entry", {})
+        tmp = Path(QStandardPaths.writableLocation(QStandardPaths.TempLocation) or tempfile.gettempdir())
+        key = hashlib.sha1(json_key(e).encode("utf-8")).hexdigest()[:10]
+        prm_path, rec_path = extract_run(doc, tmp / "Tuner4164_restore" / key)
+        unit, axis = e.get("unit"), e.get("axis")
+        note = ""
+        if unit and self.unit.findText(unit) >= 0:
+            self.unit.blockSignals(True)
+            self.unit.setCurrentText(unit)
+            self.unit.blockSignals(False)
+            self.prefs.setValue("unit", unit)
+        elif unit:
+            note = f" המסובב \"{html.escape(unit)}\" לא קיים כאן; אם תנתח, זה יישמר תחת \"{html.escape(self.unit.currentText())}\"."
+        self.advice = None
+        self.comparison = None
+        if axis in AXES:
+            self.axis.setCurrentText(axis)
+        if prm_path:
+            self.load_prm_file(str(prm_path))
+            r = AXES.index(self.axis.currentText())
+            for c, k in enumerate(TUNING_KEYS):        # the values used then, even if typed into the table
+                if k in e.get("gains", {}):
+                    self.table.setItem(r, c, QTableWidgetItem(str(e["gains"][k])))
+        if rec_path:
+            self.load_recording_file(str(rec_path))
+        i = self.test.findData(e.get("test"))
+        if i >= 0:
+            self.test.setCurrentIndex(i)
+        self._fill_history()
+        self.tabs.setCurrentIndex(0)
+        self.result.setHtml(f"<p><b>שוחזרה הריצה {html.escape(e.get('recording', ''))} מ-{html.escape(e.get('time', ''))}</b> "
+                            f"(ה-PRM וההקלטה המקוריים). לחץ <b>נתח והמלץ</b> כדי לראות אותה שוב.{note}</p>")
+
+    def save_selected_prm(self) -> None:
+        doc = self._selected_doc()
+        if not doc or doc.get("prm", {}).get("text") is None:
+            return
+        e = doc["entry"]
+        default = str(Path(self._dir()) / f"{e.get('unit', '')}_{e.get('axis', '')}_{Path(e.get('recording', 'run')).stem}.prm")
+        name, _ = QFileDialog.getSaveFileName(self, "שמירת ה-PRM של הריצה", default, "קובצי פרמטרים (*.prm)")
+        if name:
+            Path(name).write_bytes(doc["prm"]["text"].encode("cp1255", "replace"))
+            self.statusBar().showMessage(f"נשמר: {name}. אפשר להוריד אותו לבקר (Download Controller Parameters).", 8000)
+
+    def compare_selected_prm(self) -> None:
+        doc = self._selected_doc()
+        if not doc:
+            return
+        if not self.prm.values:
+            QMessageBox.information(self, "השוואת PRM", "טען קודם קובץ PRM להשוואה.")
+            return
+        old = parse_prm(doc.get("prm", {}).get("text") or "").values
+        now = self.prm.values
+        keys = sorted(set(old) | set(now), key=lambda k: (k[0] != self.axis.currentText(), k))
+        diff = [(f"{a}{k}", old.get((a, k)), now.get((a, k))) for a, k in keys if old.get((a, k)) != now.get((a, k))]
+        dlg = QDialog(self)
+        dlg.setWindowTitle("השוואת PRM")
+        dlg.resize(560, 520)
+        lay = QVBoxLayout(dlg)
+        e = doc["entry"]
+        lay.addWidget(QLabel(f"{len(diff)} ערכים שונים בין הריצה {e.get('recording', '')} ({e.get('time', '')}) "
+                             f"לבין {self.prm.path.name if self.prm.path else 'ה-PRM הטעון'}:"))
+        tbl = QTableWidget(len(diff), 3)
+        tbl.setHorizontalHeaderLabels(["פרמטר", "בריצה הנבחרת", "ב-PRM הטעון"])
+        tbl.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        tbl.setEditTriggers(QTableWidget.NoEditTriggers)
+        for r, (k, a, b) in enumerate(diff):
+            for c, v in enumerate((k, "—" if a is None else str(a), "—" if b is None else str(b))):
+                tbl.setItem(r, c, QTableWidgetItem(v))
+        lay.addWidget(tbl)
+        bb = QDialogButtonBox(QDialogButtonBox.Close)
+        bb.rejected.connect(dlg.reject)
+        lay.addWidget(bb)
+        self._last_prm_diff = diff
+        dlg.exec()
+
+    def export_selected(self) -> None:
+        e = self._selected_entry()
+        p = self.history.run_path(e) if e else None
+        if not p or not p.exists():
+            return
+        default = str(Path(self._dir()) / f"{e.get('unit', '')}_{e.get('axis', '')}_{Path(e.get('recording', 'run')).stem}.json")
+        name, _ = QFileDialog.getSaveFileName(self, "ייצוא קובץ ריצה", default, "קובץ ריצה (*.json)")
+        if name:
+            shutil.copyfile(p, name)
+            self.statusBar().showMessage(f"נשמר: {name}", 6000)
+
+    def import_run(self) -> None:
+        name, _ = QFileDialog.getOpenFileName(self, "ייבוא קובץ ריצה", self._dir(), "קובץ ריצה (*.json)")
+        if not name:
+            return
+        try:
+            self._open_doc(load_run(name))
+        except (OSError, ValueError) as ex:
+            QMessageBox.warning(self, "שגיאה", f"לא הצלחתי לקרוא את קובץ הריצה: {ex}")
+
     def new_unit(self) -> bool:
         name, ok = QInputDialog.getText(self, "מסובב חדש", "שם המסובב או הבקר (למשל מספר סידורי):")
         name = name.strip()
@@ -583,7 +768,7 @@ class MainWindow(QMainWindow):
     def new_calibration(self) -> None:
         axis, unit = self.axis.currentText(), self.unit.currentText()
         if QMessageBox.question(self, "מחיקת זיכרון", f"למחוק את הזיכרון של ציר {axis} ב-\"{unit}\" בלבד?\n"
-                                f"מסובבים וצירים אחרים לא יימחקו.") != QMessageBox.Yes:
+                                f"גם קובצי הריצות השמורים שלו יימחקו. מסובבים וצירים אחרים לא יימחקו.") != QMessageBox.Yes:
             return
         self.history.clear(unit, axis)
         self.comparison = None

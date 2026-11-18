@@ -323,3 +323,35 @@ def test_fingerprint_spots_another_controller():
     a = fingerprint(parse_prm("YPA[43]=8000000\nYPA[52]=-9600\nYHL=2000000000\n"), "Y")
     b = fingerprint(parse_prm("YPA[43]=12000000\nYPA[52]=-14400\nYHL=2000000000\n"), "Y")
     assert other_unit(a, a) == [] and other_unit(a, b) == ["PA[43]", "PA[52]"]
+
+
+def test_run_file_round_trip_restores_exactly(tmp_path):
+    import os
+    from tune4164.history import History, extract_run, load_run, run_document
+    rec = tmp_path / "src" / "roll9.sdv"
+    rec.parent.mkdir()
+    rec.write_bytes(bytes(range(256)) * 50)
+    os.utime(rec, (1_700_000_000, 1_700_000_000))
+    prm = "' test\r\nYKP[1]=14\r\nYKI[2]=26\r\n"
+    h = History(tmp_path / "h.json")
+    e = {**_entry("roll9.sdv|12800|1700000000", {"KI[2]": 26}, {}), "unit": "SN1", "recording": "roll9.sdv"}
+    h.save_run(e, run_document(e, "cba.prm", prm, "roll9.sdv", rec.read_bytes(), rec.stat().st_mtime))
+    h.put(e)
+    doc = load_run(History(tmp_path / "h.json").run_path(e))
+    assert doc["prm"]["text"] == prm and doc["entry"]["gains"] == {"KI[2]": 26}
+    p, r = extract_run(doc, tmp_path / "out")
+    assert p.read_bytes() == prm.encode() and r.read_bytes() == rec.read_bytes()
+    assert int(r.stat().st_mtime) == 1_700_000_000           # same history key when analysed again
+    h.clear("SN1", "Y")
+    assert not (tmp_path / "archive" / e["archive"]).exists()
+
+
+def test_reanalysing_keeps_order_and_predecessor(tmp_path):
+    from tune4164.history import History
+    h = History(tmp_path / "h.json")
+    for k in ("r1", "r2", "r3"):
+        h.put({**_entry(k, {}, {}), "unit": "U"})
+    h.put({**_entry("r1", {"KP[1]": 9}, {}), "unit": "U"})       # restored and analysed again
+    assert [e["rec_key"] for e in h.for_axis("U", "Y")] == ["r1", "r2", "r3"]
+    assert h.previous("U", "Y", "r1") is None and h.previous("U", "Y", "r3")["rec_key"] == "r2"
+    assert h.previous("U", "Y", "r4")["rec_key"] == "r3"

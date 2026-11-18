@@ -5,8 +5,13 @@ Stored as JSON in the user's application data folder, so it survives closing the
 
 from __future__ import annotations
 
+import base64
+import gzip
+import hashlib
 import json
 import math
+import os
+import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -189,6 +194,52 @@ def other_unit(prev_fp: dict | None, fp: dict | None) -> list[str]:
     return diff if "PA[43]" in diff or len(diff) >= 2 else []
 
 
+RUN_FORMAT = "tuner4164-run"
+
+
+def _safe(name: str) -> str:
+    return re.sub(r'[\\/:*?"<>|\s]+', "_", name).strip("_") or "x"
+
+
+def run_document(entry: dict, prm_name: str, prm_text: str | None, rec_name: str, rec_bytes: bytes | None,
+                 rec_mtime: float | None) -> dict:
+    """One self-contained run: the analysis, the whole PRM (readable) and the original recording
+    (gzip + base64, so it can be restored byte for byte)."""
+    return {
+        "format": RUN_FORMAT, "version": 1,
+        "entry": {k: v for k, v in entry.items() if k != "archive"},
+        "prm": {"name": prm_name, "text": prm_text},
+        "recording": {"name": rec_name, "mtime": rec_mtime,
+                      "gz_b64": base64.b64encode(gzip.compress(rec_bytes)).decode("ascii") if rec_bytes else None},
+    }
+
+
+def load_run(path: str | Path) -> dict:
+    doc = json.loads(Path(path).read_text(encoding="utf-8"))
+    if doc.get("format") != RUN_FORMAT:
+        raise ValueError("זה לא קובץ ריצה של כיול 4164")
+    return doc
+
+
+def extract_run(doc: dict, dest: str | Path) -> tuple[Path | None, Path | None]:
+    """Write the PRM and the recording of a run back to files (same names and time stamp, so analysing
+    the restored recording updates its own history entry instead of adding a new one)."""
+    dest = Path(dest)
+    dest.mkdir(parents=True, exist_ok=True)
+    prm_path = rec_path = None
+    prm = doc.get("prm") or {}
+    if prm.get("text") is not None:
+        prm_path = dest / _safe(prm.get("name") or "restored.prm")
+        prm_path.write_bytes(prm["text"].encode("cp1255", "replace"))
+    rec = doc.get("recording") or {}
+    if rec.get("gz_b64"):
+        rec_path = dest / _safe(rec.get("name") or "restored.sdv")
+        rec_path.write_bytes(gzip.decompress(base64.b64decode(rec["gz_b64"])))
+        if rec.get("mtime"):
+            os.utime(rec_path, (rec["mtime"], rec["mtime"]))
+    return prm_path, rec_path
+
+
 class History:
     """All units (rotators / controllers) and axes in one file; every (unit, axis) is its own sequence."""
 
@@ -229,11 +280,14 @@ class History:
         return [e for e in self.entries if e.get("unit") == unit and e.get("axis") == axis]
 
     def previous(self, unit: str, axis: str, rec_key: str) -> dict | None:
-        """The last entry of this unit and axis made from a different recording."""
-        for e in reversed(self.entries):
-            if e.get("unit") == unit and e.get("axis") == axis and e.get("rec_key") != rec_key:
-                return e
-        return None
+        """The entry before this recording in the unit/axis sequence (for a recording analysed for the
+        first time: the last one)."""
+        seq = self.for_axis(unit, axis)
+        keys = [e.get("rec_key") for e in seq]
+        if rec_key in keys:
+            i = keys.index(rec_key)
+            return seq[i - 1] if i > 0 else None
+        return seq[-1] if seq else None
 
     def get(self, unit: str, axis: str, rec_key: str) -> dict | None:
         for e in self.entries:
@@ -242,15 +296,43 @@ class History:
         return None
 
     def put(self, entry: dict) -> None:
-        """Add, or replace the entry of the same recording, unit and axis (analysing it again)."""
+        """Add, or replace in place the entry of the same recording, unit and axis (analysing it again)."""
         entry.setdefault("unit", DEFAULT_UNIT)
         for i, e in enumerate(self.entries):
             if (e.get("unit"), e.get("axis"), e.get("rec_key")) == (entry["unit"], entry["axis"], entry["rec_key"]):
-                del self.entries[i]
+                self.entries[i] = entry
                 break
-        self.entries.append(entry)
+        else:
+            self.entries.append(entry)
         self.save()
 
+    @property
+    def archive_dir(self) -> Path:
+        return self.path.parent / "archive"
+
+    def save_run(self, entry: dict, doc: dict) -> None:
+        """Write the run file and note its place in the entry."""
+        rel = (Path(_safe(entry.get("unit", DEFAULT_UNIT))) / entry["axis"] /
+               f"{hashlib.sha1(entry['rec_key'].encode('utf-8')).hexdigest()[:10]}_{_safe(entry.get('recording', 'rec'))}.json")
+        try:
+            path = self.archive_dir / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(doc, ensure_ascii=False), encoding="utf-8")
+            entry["archive"] = rel.as_posix()
+        except OSError:
+            entry.pop("archive", None)
+
+    def run_path(self, entry: dict) -> Path | None:
+        rel = entry.get("archive")
+        return self.archive_dir / rel if rel else None
+
     def clear(self, unit: str, axis: str) -> None:
+        for e in self.for_axis(unit, axis):
+            p = self.run_path(e)
+            if p:
+                try:
+                    p.unlink()
+                except OSError:
+                    pass
         self.entries = [e for e in self.entries if not (e.get("unit") == unit and e.get("axis") == axis)]
         self.save()
