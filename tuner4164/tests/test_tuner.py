@@ -254,3 +254,42 @@ def test_moving_from_velocity_closes_short_gaps():
     v = np.where((t < 0.4) | ((t > 0.45) & (t < 0.7)), 1000.0, 0.0)
     m = moving_from_velocity(t, v)
     assert m[42] and not m[90]
+
+
+def _entry(rec, gains, metrics, advice=None, test="full"):
+    return {"axis": "Y", "test": test, "rec_key": rec, "recording": rec, "time": "t", "gains": gains,
+            "metrics": metrics, "advice": advice or [], "top_speed": 10000}
+
+
+def test_history_compare_better_and_applied():
+    from tune4164.history import compare
+    prev = _entry("roll1", {"KI[2]": 20, "KI[3]": 20}, {"settle": 2.6, "stuck_time": 2.5, "end_peak": 37},
+                  [{"param": "KI[2]", "old": 20, "new": 26}, {"param": "KI[3]", "old": 20, "new": 26}])
+    cur = _entry("roll2", {"KI[2]": 26, "KI[3]": 26}, {"settle": 1.5, "stuck_time": 1.2, "end_peak": 36})
+    c = compare(prev, cur)
+    assert c.verdict == "better" and c.applied is True
+    assert c.changed == [("KI[2]", 20, 26), ("KI[3]", 20, 26)]
+
+
+def test_history_worse_steps_back_half_way():
+    from tune4164.history import compare, step_back
+    prev = _entry("roll3", {"KI[2]": 26, "KI[3]": 26}, {"settle": 1.0, "stuck_time": 0.5, "oscillations": 0},
+                  [{"param": "KI[2]", "old": 26, "new": 34}, {"param": "KI[3]", "old": 26, "new": 34}])
+    cur = _entry("roll4", {"KI[2]": 34, "KI[3]": 34}, {"settle": "inf", "stuck_time": 0.5, "oscillations": 5})
+    c = compare(prev, cur)
+    assert c.verdict == "worse"
+    back = step_back(c, cur["gains"])
+    assert back.items() == [("KI[2]", 34, 30), ("KI[3]", 34, 30)]
+
+
+def test_history_file_round_trip(tmp_path):
+    from tune4164.history import History
+    h = History(tmp_path / "h.json")
+    h.put(_entry("a", {"KP[1]": 1}, {"settle": "inf"}))
+    h.put(_entry("b", {"KP[1]": 2}, {"settle": 0.4}))
+    h.put(_entry("b", {"KP[1]": 3}, {"settle": 0.3}))          # analysing the same recording again replaces it
+    h2 = History(tmp_path / "h.json")
+    assert [e["recording"] for e in h2.for_axis("Y")] == ["a", "b"]
+    assert h2.previous("Y", "b")["recording"] == "a"
+    h2.clear("Y")
+    assert History(tmp_path / "h.json").for_axis("Y") == []

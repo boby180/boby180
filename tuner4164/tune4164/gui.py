@@ -9,15 +9,16 @@ from pathlib import Path
 
 import numpy as np
 import pyqtgraph as pg
-from PySide6.QtCore import QSettings, Qt
+from PySide6.QtCore import QSettings, QStandardPaths, Qt
 from PySide6.QtGui import QColor, QPalette
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QFileDialog, QFormLayout, QGroupBox, QHBoxLayout, QHeaderView, QLabel,
-    QDialog, QDialogButtonBox, QMainWindow, QPushButton, QTabWidget, QSpinBox, QSplitter, QTableWidget, QTableWidgetItem, QTextBrowser, QVBoxLayout,
+    QDialog, QDialogButtonBox, QMainWindow, QMessageBox, QPushButton, QTabWidget, QSpinBox, QSplitter, QTableWidget, QTableWidgetItem, QTextBrowser, QVBoxLayout,
     QWidget,
 )
 
 from .advise import SET_NAMES, TESTS, Advice, advise
+from .history import History, advice_fields, compare, make_entry, step_back
 from .analysis import Analysis, command_metrics, move_metrics, moving_from_velocity, step_metrics, tacho_metrics
 from .prm import AXES, TUNING_KEYS, PrmFile, load_prm, prm_text
 from .recording import SAMPLE_TIME_4M, Recording, load_recording
@@ -71,8 +72,24 @@ SAFETY = ("ההמלצות מבוססות על ההקלטה בלבד, ולא מח
           "בודקים במהירות נמוכה עם יד על לחצן החירום, ושומרים בבקר (SV) רק כשמרוצים.")
 
 
+HIST_COLS = ["זמן", "הקלטה", "מה השתנה מהקודמת", "התייצבות", "זמן תקוע", "שיא אחרי עצירה", "פיגור", "תוצאה",
+             "ההמלצה שניתנה"]
+
+
+def _fmt_metric(v, unit: str) -> str:
+    if v is None:
+        return "—"
+    if v == "inf" or v == float("inf"):
+        return "לא התייצב" if unit == "s" else "∞"
+    if unit == "s":
+        return f"{v * 1000:.0f}ms"
+    if unit == "%":
+        return f"{v:.2f}%"
+    return f"{v:.0f}" if abs(v) >= 10 or float(v).is_integer() else f"{v:.2f}"
+
+
 class MainWindow(QMainWindow):
-    def __init__(self):
+    def __init__(self, history_path: str | Path | None = None):
         super().__init__()
         self.setWindowTitle(f"כיול 4164  ·  גרסה {__version__}")
         self.setLayoutDirection(Qt.RightToLeft)
@@ -80,6 +97,11 @@ class MainWindow(QMainWindow):
         self.prm = PrmFile()
         self.rec: Recording | None = None
         self.advice: Advice | None = None
+        self.comparison = None
+        if history_path is None:
+            base = QStandardPaths.writableLocation(QStandardPaths.AppDataLocation)
+            history_path = Path(base or Path.home() / ".tuner4164") / "history.json"
+        self.history = History(history_path)
 
         root = QWidget()
         self.setCentralWidget(root)
@@ -122,6 +144,7 @@ class MainWindow(QMainWindow):
         split.addWidget(self._left())
         split.addWidget(self._right())
         split.setSizes([520, 880])
+        self._fill_history()
 
     # ---- building ----
     def _left(self) -> QWidget:
@@ -203,6 +226,23 @@ class MainWindow(QMainWindow):
         self.tabs = QTabWidget()
         self.tabs.addTab(analysis, "ניתוח")
         self.tabs.addTab(self.all_plots, "כל הערוצים בהקלטה")
+        hist = QWidget()
+        hl = QVBoxLayout(hist)
+        self.hist_label = QLabel()
+        self.hist_label.setWordWrap(True)
+        self.hist_table = QTableWidget(0, len(HIST_COLS))
+        self.hist_table.setHorizontalHeaderLabels(HIST_COLS)
+        self.hist_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
+        self.hist_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        new_cal = QPushButton("התחל כיול חדש לציר הזה (מחיקת הזיכרון שלו)")
+        new_cal.clicked.connect(self.new_calibration)
+        hl.addWidget(self.hist_label)
+        hl.addWidget(self.hist_table, 1)
+        hrow = QHBoxLayout()
+        hrow.addWidget(new_cal)
+        hrow.addStretch(1)
+        hl.addLayout(hrow)
+        self.tabs.addTab(hist, "היסטוריית כיול")
         lay.addWidget(self.tabs, 5)
         res = QGroupBox("ממצאים והמלצה")
         rl = QVBoxLayout(res)
@@ -250,7 +290,10 @@ class MainWindow(QMainWindow):
         self.prm_note.setText(f"{Path(name).name}: {len(self.prm.values)} ערכים, צירים {', '.join(found) or '—'}"
                               + (f". {len(self.prm.skipped)} שורות לא זוהו" if self.prm.skipped else ""))
         self._show_files()
+        had_advice = self.advice is not None
         self._axis_changed(self.axis.currentText())
+        if had_advice and self.rec is not None:
+            self.analyze()  # refresh: the analysis may have run before the gains were known
         self._show_files()
 
     def open_recording(self) -> None:
@@ -302,8 +345,15 @@ class MainWindow(QMainWindow):
         mode = self.prm.mode(axis)
         if mode:
             self.mode.setCurrentText(mode)
-        if self.advice is not None and self.rec is not None:
-            self.analyze()  # refresh, so the shown numbers always match the axis and the loaded PRM
+        if not hasattr(self, "hist_table"):
+            return  # still building the window
+        self._fill_history()
+        if self.advice is not None:
+            self.advice = None
+            self.comparison = None
+            self.copy_btn.setEnabled(False)
+            self.save_btn.setEnabled(False)
+            self.result.setHtml(f"<p>נבחר ציר {axis}. בדוק שהעמודות שייכות לציר הזה ולחץ <b>נתח והמלץ</b>.</p>")
 
     # ---- analysis ----
     def _col(self, role: str) -> np.ndarray | None:
@@ -379,8 +429,115 @@ class MainWindow(QMainWindow):
         if cmd is not None:
             an.command = command_metrics(cmd, gains.get("TL") or None)
         self.advice = advise(self.mode.currentText(), test, gains, an)
+        self._remember(test, gains, an, vref, vel)
         self._plot(t, ref, act, pe, cmd, test, vel, tacho)
         self._show_advice()
+
+    # ---- calibration memory ----
+    def _rec_key(self) -> str:
+        p = self.rec.path
+        if p is None:
+            return "?"
+        try:
+            st = p.stat()
+            return f"{p.name}|{st.st_size}|{int(st.st_mtime)}"
+        except OSError:
+            return p.name
+
+    def _remember(self, test, gains, an, vref, vel) -> None:
+        axis = self.axis.currentText()
+        speed = vref if vref is not None else vel
+        top = float(np.nanmax(np.abs(speed))) if speed is not None and len(speed) else None
+        entry = make_entry(axis, test, gains, an, self.advice, self._rec_key(),
+                           self.rec.path.name if self.rec.path else "?",
+                           self.prm.path.name if self.prm.path else "", top)
+        prev = self.history.previous(axis, entry["rec_key"])
+        self.comparison = compare(prev, entry) if prev else None
+        if self.comparison:
+            back = step_back(self.comparison, gains)
+            if back is not None:
+                undone = {k for k, _, _ in back.items()}
+                self.advice.changes = [back] + [c for c in self.advice.changes
+                                                if not undone & {k for k, _, _ in c.items()}]
+                self.advice.status = "change"
+            entry["verdict"] = self.comparison.verdict
+            entry.update(advice_fields(self.advice))
+        self.history.put(entry)
+        self._fill_history()
+
+    def _fill_history(self) -> None:
+        axis = self.axis.currentText()
+        rows = self.history.for_axis(axis)
+        self.hist_label.setText(f"ציר {axis}: {len(rows)} הקלטות בזיכרון. כל ניתוח נשמר כאן אוטומטית, וההקלטה הבאה "
+                                f"של אותו ציר מושווית לקודמת. כשמתחילים מכונה או ציר מחדש, לוחצים על הכפתור למטה.")
+        self.hist_table.setRowCount(len(rows))
+        prev = None
+        for r, e in enumerate(rows):
+            m = e.get("metrics", {})
+            changed = ""
+            if prev:
+                pg = prev.get("gains", {})
+                changed = ", ".join(f"{k}: {pg[k]}→{v}" for k, v in e.get("gains", {}).items() if k in pg and pg[k] != v)
+            adv = e.get("advice") or []
+            cells = [e.get("time", ""), e.get("recording", ""), changed or ("—" if prev else "התחלה"),
+                     _fmt_metric(m.get("settle"), "s"), _fmt_metric(m.get("stuck_time"), "s"),
+                     _fmt_metric(m.get("end_peak"), ""), _fmt_metric(m.get("following"), ""),
+                     {"better": "השתפר ✔", "worse": "החמיר ✘", "mixed": "מעורב", "same": "בלי שינוי"}.get(e.get("verdict"), ""),
+                     ", ".join(f"{a['param']}={a['new']}" for a in adv) or "—"]
+            for c, text in enumerate(cells):
+                item = QTableWidgetItem(text)
+                if c == 7 and e.get("verdict") in ("better", "worse"):
+                    item.setForeground(QColor("#1f9d55" if e["verdict"] == "better" else "#c62f2f"))
+                self.hist_table.setItem(r, c, item)
+            prev = e
+        self.hist_table.scrollToBottom()
+
+    def new_calibration(self) -> None:
+        axis = self.axis.currentText()
+        if QMessageBox.question(self, "כיול חדש", f"למחוק את כל הזיכרון של ציר {axis} ולהתחיל כיול חדש?") \
+                != QMessageBox.Yes:
+            return
+        self.history.clear(axis)
+        self.comparison = None
+        self._fill_history()
+
+    def _comparison_html(self) -> str:
+        c = self.comparison
+        if c is None:
+            return ("<p style='color:#5d6b7a'>זו ההקלטה הראשונה של הציר הזה בזיכרון. ההקלטה הבאה תושווה אליה "
+                    "(ראה לשונית \"היסטוריית כיול\").</p>")
+        color = {"better": "#1f9d55", "worse": "#c62f2f", "mixed": "#b86e00", "same": "#5d6b7a"}[c.verdict]
+        out = [f"<div style='border:2px solid {color}; padding:8px; margin-bottom:6px;'>"
+               f"<p style='font-size:13pt; color:{color}'><b>לעומת ההקלטה הקודמת ({html.escape(c.prev.get('recording', ''))}, "
+               f"{html.escape(c.prev.get('time', ''))}): {c.verdict_text}</b></p>"]
+        if c.changed:
+            out.append("<p>מה השתנה ב-PRM מאז: " + ", ".join(
+                f"<b>{LRM}{k}{LRM}</b> {LRM}{a}{LRM}→{LRM}{b}{LRM}" for k, a, b in c.changed) + "</p>")
+        else:
+            out.append("<p style='color:#b86e00'>לא השתנו פרמטרי כיול מאז ההקלטה הקודמת. אם שינית ערכים בבקר, "
+                       "טען את קובץ ה-PRM העדכני.</p>")
+        if c.applied is True:
+            out.append("<p>ההמלצה הקודמת יושמה ✔</p>")
+        elif c.applied is False:
+            out.append("<p style='color:#b86e00'>ההמלצה הקודמת לא יושמה בדיוק: " + ", ".join(
+                f"{LRM}{k}{LRM} הומלץ {LRM}{want}{LRM} ועכשיו {LRM}{now}{LRM}" for k, want, now in c.not_applied) + "</p>")
+        if c.rows:
+            out.append("<table cellpadding='3' style='border-collapse:collapse'><tr><th>מדד</th><th>קודם</th>"
+                       "<th>עכשיו</th><th></th></tr>")
+            for label, unit, b, a, sign in c.rows:
+                mark = {1: "<span style='color:#1f9d55'>✔ השתפר</span>", -1: "<span style='color:#c62f2f'>✘ החמיר</span>",
+                        0: "<span style='color:#5d6b7a'>=</span>"}[sign]
+                out.append(f"<tr><td>{label}</td><td>{LRM}{_fmt_metric(b, unit)}{LRM}</td>"
+                           f"<td>{LRM}{_fmt_metric(a, unit)}{LRM}</td><td>{mark}</td></tr>")
+            out.append("</table>")
+        for n in c.notes:
+            out.append(f"<p style='color:#b86e00'>⚠ {html.escape(n)}</p>")
+        if c.verdict == "better":
+            out.append("<p>השינוי האחרון עזר. ממשיכים לפי ההמלצה למטה.</p>")
+        elif c.verdict == "same" and c.changed:
+            out.append("<p>השינוי האחרון כמעט לא השפיע על התנועה.</p>")
+        out.append("</div>")
+        return "".join(out)
 
     def _plot_all(self) -> None:
         """Every recorded vector in its own strip, like the Data Viewer."""
@@ -469,7 +626,7 @@ class MainWindow(QMainWindow):
     def _show_advice(self) -> None:
         a = self.advice
         axis = self.axis.currentText()
-        parts = []
+        parts = [self._comparison_html()]
         missing = self._missing_for_tuning()
         if missing:
             parts.append("<div style='background:#e6f0fa; border:2px solid #1f6fb3; padding:8px;'>"
