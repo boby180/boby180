@@ -272,7 +272,7 @@ class MainWindow(QMainWindow):
         self.hist_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
         self.hist_table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.hist_table.setSelectionBehavior(QTableWidget.SelectRows)
-        self.hist_table.setSelectionMode(QTableWidget.SingleSelection)
+        self.hist_table.setSelectionMode(QTableWidget.ExtendedSelection)
         self.hist_table.itemSelectionChanged.connect(self._hist_selected)
         self._hist_rows: list[dict] = []
         new_cal = QPushButton("מחק את הזיכרון של הציר הזה במסובב הזה")
@@ -291,6 +291,11 @@ class MainWindow(QMainWindow):
             b.setEnabled(False)
             run_row.addWidget(b)
             self.run_btns.append(b)
+        self.pair_btn = QPushButton("השווה 2 ריצות מסומנות")
+        self.pair_btn.setToolTip("מסמנים שתי שורות (Ctrl + לחיצה) ולוחצים: מדדים, שינויים ב-PRM וגרפים זה על זה")
+        self.pair_btn.setEnabled(False)
+        self.pair_btn.clicked.connect(self.compare_selected_pair)
+        run_row.addWidget(self.pair_btn)
         imp = QPushButton("ייבא JSON...")
         imp.clicked.connect(self.import_run)
         run_row.addWidget(imp)
@@ -311,7 +316,9 @@ class MainWindow(QMainWindow):
         self.copy_btn.clicked.connect(self.copy_command)
         self.save_btn = QPushButton("שמור PRM עם השינוי...")
         self.save_btn.clicked.connect(self.save_prm)
-        for b in (self.copy_btn, self.save_btn):
+        self.prev_btn = QPushButton("השוואה גרפית להקלטה הקודמת")
+        self.prev_btn.clicked.connect(self.compare_with_previous)
+        for b in (self.copy_btn, self.save_btn, self.prev_btn):
             b.setEnabled(False)
             row.addWidget(b)
         row.addStretch(1)
@@ -418,6 +425,7 @@ class MainWindow(QMainWindow):
             self.comparison = None
             self.copy_btn.setEnabled(False)
             self.save_btn.setEnabled(False)
+            self.prev_btn.setEnabled(False)
             self.result.setHtml(f"<p>נבחר {html.escape(self.unit.currentText())}, ציר {axis}. בדוק שהעמודות שייכות לציר הזה ולחץ <b>נתח והמלץ</b>.</p>")
 
     # ---- analysis ----
@@ -554,6 +562,7 @@ class MainWindow(QMainWindow):
             entry.update(advice_fields(self.advice))
         self._archive(entry)
         self.history.put(entry)
+        self._current_entry = entry
         self._fill_history()
 
     def _fill_history(self) -> None:
@@ -627,10 +636,99 @@ class MainWindow(QMainWindow):
         p = self.history.run_path(e) if e else None
         for b in self.run_btns:
             b.setEnabled(bool(p and p.exists()))
+        self.pair_btn.setEnabled(len(self._selected_entries()) == 2)
+
+    def _selected_entries(self) -> list[dict]:
+        rows = sorted({i.row() for i in self.hist_table.selectionModel().selectedRows()})
+        return [self._hist_rows[r] for r in rows if 0 <= r < len(self._hist_rows)]
 
     def _selected_entry(self) -> dict | None:
-        r = self.hist_table.currentRow()
-        return self._hist_rows[r] if 0 <= r < len(self._hist_rows) else None
+        sel = self._selected_entries()
+        return sel[0] if len(sel) == 1 else None
+
+    def compare_selected_pair(self) -> None:
+        sel = self._selected_entries()
+        if len(sel) == 2:
+            self.compare_runs(sel[0], sel[1])
+
+    def compare_with_previous(self) -> None:
+        cur = getattr(self, "_current_entry", None)
+        if self.comparison is not None and cur is not None:
+            self.compare_runs(self.comparison.prev, cur)
+
+    def _run_curves(self, entry: dict) -> dict | None:
+        """Position error (and driver command) of a saved run, with the time of its stop."""
+        p = self.history.run_path(entry)
+        if not p or not p.exists():
+            return None
+        try:
+            doc = load_run(p)
+            tmp = Path(QStandardPaths.writableLocation(QStandardPaths.TempLocation) or tempfile.gettempdir())
+            _, rec_path = extract_run(doc, tmp / "Tuner4164_compare" / hashlib.sha1(json_key(entry).encode()).hexdigest()[:10])
+            rec = load_recording(rec_path, self.rg.value() * SAMPLE_TIME_4M)
+        except (OSError, ValueError, TypeError):
+            return None
+        col = lambda role: None if (i := rec.guess(role)) is None else rec.data[:, i].astype(float)  # noqa: E731
+        t = rec.time
+        pe, ref, act, vel, vref, cmd = (col(r) for r in ("error", "reference", "actual", "velocity", "velocity_ref", "command"))
+        if pe is None and ref is not None and act is not None:
+            pe = ref - act
+        if pe is None:
+            return None
+        if vref is not None:
+            moving = np.abs(vref) > 1e-6 * (np.max(np.abs(vref)) + 1)
+        elif ref is not None:
+            moving = np.abs(np.gradient(ref)) > 1e-9
+        elif vel is not None or act is not None:
+            moving = moving_from_velocity(t, vel if vel is not None else np.gradient(act, t))
+        else:
+            moving = None
+        mv = move_metrics(t, pe, moving, vref=vref, pos=act, cmd=cmd)
+        return {"t": t, "pe": pe, "cmd": cmd, "stop": mv.stop_time if mv.has_stop else None}
+
+    def compare_runs(self, a: dict, b: dict) -> None:
+        """a = the earlier run, b = the later one."""
+        comp = compare(a, b)
+        dlg = QDialog(self)
+        dlg.setWindowTitle("השוואת ריצות")
+        dlg.resize(1150, 860)
+        lay = QVBoxLayout(dlg)
+        txt = QTextBrowser()
+        title = (f"{html.escape(b.get('recording', ''))} ({html.escape(b.get('time', ''))}) לעומת "
+                 f"{html.escape(a.get('recording', ''))} ({html.escape(a.get('time', ''))})")
+        txt.setHtml(self._comparison_html(comp, title))
+        lay.addWidget(txt, 2)
+        ca, cb = self._run_curves(a), self._run_curves(b)
+        self._last_pair = (comp, ca, cb)
+        if ca and cb:
+            colors = [("#2f6fb3", f"לפני: {a.get('recording', '')}"), ("#e07b00", f"אחרי: {b.get('recording', '')}")]
+            full = pg.PlotWidget(title="שגיאת מיקום לאורך כל ההקלטה")
+            zoom = pg.PlotWidget(title="סביב העצירה (שתי הריצות מיושרות לרגע העצירה)")
+            cmdp = pg.PlotWidget(title="פקודת הדרייבר סביב העצירה")
+            for w in (full, zoom, cmdp):
+                w.setLayoutDirection(Qt.LeftToRight)
+                w.showGrid(x=True, y=True, alpha=0.25)
+                w.addLegend()
+            zoom.setLabel("bottom", "זמן מהעצירה [s]")
+            cmdp.setXLink(zoom)
+            for cur, (color, name) in zip((ca, cb), colors):
+                pen = pg.mkPen(color, width=1.5)
+                full.plot(cur["t"], cur["pe"], pen=pen, name=name)
+                if cur["stop"] is not None:
+                    m = (cur["t"] >= cur["stop"] - 0.5) & (cur["t"] <= cur["stop"] + 4)
+                    zoom.plot(cur["t"][m] - cur["stop"], cur["pe"][m], pen=pen, name=name)
+                    if cur["cmd"] is not None:
+                        cmdp.plot(cur["t"][m] - cur["stop"], cur["cmd"][m], pen=pen, name=name)
+            lay.addWidget(zoom, 3)
+            lay.addWidget(cmdp, 2)
+            lay.addWidget(full, 2)
+        else:
+            lay.addWidget(QLabel("לאחת הריצות (או לשתיהן) אין קובץ ריצה שמור, ולכן מוצגים רק המדדים, בלי גרף."))
+        bb = QDialogButtonBox(QDialogButtonBox.Close)
+        bb.button(QDialogButtonBox.Close).setText("סגור")
+        bb.rejected.connect(dlg.reject)
+        lay.addWidget(bb)
+        dlg.exec()
 
     def _selected_doc(self) -> dict | None:
         e = self._selected_entry()
@@ -721,6 +819,7 @@ class MainWindow(QMainWindow):
                 tbl.setItem(r, c, QTableWidgetItem(v))
         lay.addWidget(tbl)
         bb = QDialogButtonBox(QDialogButtonBox.Close)
+        bb.button(QDialogButtonBox.Close).setText("סגור")
         bb.rejected.connect(dlg.reject)
         lay.addWidget(bb)
         self._last_prm_diff = diff
@@ -774,21 +873,26 @@ class MainWindow(QMainWindow):
         self.comparison = None
         self._fill_history()
 
-    def _comparison_html(self) -> str:
-        c = self.comparison
+    def _comparison_html(self, c=None, title: str | None = None) -> str:
+        main = c is None and title is None
+        c = self.comparison if main else c
         if c is None:
             return ("<p style='color:#5d6b7a'>זו ההקלטה הראשונה של הציר הזה בזיכרון. ההקלטה הבאה תושווה אליה "
                     "(ראה לשונית \"היסטוריית כיול\").</p>")
         color = {"better": "#1f9d55", "worse": "#c62f2f", "mixed": "#b86e00", "same": "#5d6b7a"}[c.verdict]
         out = [f"<div style='border:2px solid {color}; padding:8px; margin-bottom:6px;'>"
-               f"<p style='font-size:13pt; color:{color}'><b>לעומת ההקלטה הקודמת ({html.escape(c.prev.get('recording', ''))}, "
-               f"{html.escape(c.prev.get('time', ''))}): {c.verdict_text}</b></p>"]
+               f"<p style='font-size:13pt; color:{color}'><b>"
+               + (title or f"לעומת ההקלטה הקודמת ({html.escape(c.prev.get('recording', ''))}, "
+                           f"{html.escape(c.prev.get('time', ''))})")
+               + f": {c.verdict_text}</b></p>"]
         if c.changed:
-            out.append("<p>מה השתנה ב-PRM מאז: " + ", ".join(
+            out.append(f"<p>מה השתנה ב-PRM {'מאז' if main else 'בין שתי הריצות'}: " + ", ".join(
                 f"<b>{LRM}{k}{LRM}</b> {LRM}{a}{LRM}→{LRM}{b}{LRM}" for k, a, b in c.changed) + "</p>")
-        else:
+        elif main:
             out.append("<p style='color:#b86e00'>לא השתנו פרמטרי כיול מאז ההקלטה הקודמת. אם שינית ערכים בבקר, "
                        "טען את קובץ ה-PRM העדכני.</p>")
+        else:
+            out.append("<p>פרמטרי הכיול זהים בשתי הריצות.</p>")
         if c.applied is True:
             out.append("<p>ההמלצה הקודמת יושמה ✔</p>")
         elif c.applied is False:
@@ -805,9 +909,9 @@ class MainWindow(QMainWindow):
             out.append("</table>")
         for n in c.notes:
             out.append(f"<p style='color:#b86e00'>⚠ {html.escape(n)}</p>")
-        if c.verdict == "better":
+        if main and c.verdict == "better":
             out.append("<p>השינוי האחרון עזר. ממשיכים לפי ההמלצה למטה.</p>")
-        elif c.verdict == "same" and c.changed:
+        elif main and c.verdict == "same" and c.changed:
             out.append("<p>השינוי האחרון כמעט לא השפיע על התנועה.</p>")
         out.append("</div>")
         return "".join(out)
@@ -937,6 +1041,7 @@ class MainWindow(QMainWindow):
         ok = a.primary is not None and a.primary.complete and a.status != "stop"
         self.copy_btn.setEnabled(ok)
         self.save_btn.setEnabled(ok)
+        self.prev_btn.setEnabled(self.comparison is not None)
 
     @staticmethod
     def _items_html(c, axis: str) -> str:
