@@ -98,7 +98,8 @@ def guard(advice: Advice, cur: dict, seq: list) -> list[str]:
         for k, c, n in items:
             if c is None or n is None or n == c:
                 continue
-            if best is not None and (tb := best["gains"].get(k)) is not None and (n - c) * (tb - c) < 0:
+            if (best is not None and (tb := best["gains"].get(k)) is not None and (n - c) * (tb - c) < 0
+                    and not _small(tb - c, c)):     # a 1% difference says nothing about which way is better
                 mid = round((c + tb) / 2)
                 targets[k] = tb if _small(mid - c, c) else mid
                 why.append(f"{k}: הריצה {best.get('recording')} עם {k}={tb} הייתה טובה יותר מעכשיו, ולכן מתקרבים "
@@ -108,7 +109,7 @@ def guard(advice: Advice, cur: dict, seq: list) -> list[str]:
             tried = []
             for r in evidence:
                 t = r["gains"].get(k)
-                if t is None or (t - c) * (n - c) <= 0 or abs(t - c) > abs(n - c) * 1.03 + 1:
+                if t is None or (t - c) * (n - c) <= 0 or abs(t - c) > abs(n - c) * 1.03 + 1 or _small(t - c, c):
                     continue
                 v = compare(r, cur).verdict
                 at_n = abs(t - n) <= max(1, 0.03 * abs(n))

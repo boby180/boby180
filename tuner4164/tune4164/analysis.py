@@ -31,6 +31,8 @@ class MoveMetrics:
     following_pos: float | None = None   # mean PE while cruising in + direction
     following_neg: float | None = None   # mean PE while cruising in - direction
     cruise_ripple: float | None = None   # PE spread while cruising
+    vib_freq: float | None = None        # main frequency of the PE ripple while cruising [Hz]
+    vib_amp: float = 0.0                 # its amplitude (about the peak), counts
     stop_time: float | None = None       # time of the stop that was judged [s]
     end_error_peak: float = 0.0          # largest |PE| after that stop
     residual_freq: float | None = None   # Hz of the oscillation after the stop
@@ -152,6 +154,27 @@ def step_metrics(t: np.ndarray, y: np.ndarray, ref: np.ndarray | None = None, ba
     return m
 
 
+def _main_freq(t: np.ndarray, x: np.ndarray, mask: np.ndarray) -> float | None:
+    """Main frequency (above 0.3 Hz) of x over the longest run of True in mask."""
+    idx = np.flatnonzero(np.diff(np.concatenate(([0], mask.astype(int), [0]))))
+    if len(idx) < 2:
+        return None
+    runs = list(zip(idx[::2], idx[1::2]))
+    a, b = max(runs, key=lambda r: r[1] - r[0])
+    if b - a < 32:
+        return None
+    seg = x[a:b] - np.mean(x[a:b])
+    dt = float(np.median(np.diff(t[a:b])))
+    if dt <= 0:
+        return None
+    spec = np.abs(np.fft.rfft(seg * np.hanning(len(seg))))
+    freqs = np.fft.rfftfreq(len(seg), dt)
+    ok = freqs >= 0.3
+    if not np.any(ok):
+        return None
+    return float(freqs[ok][int(np.argmax(spec[ok]))])
+
+
 def moving_from_velocity(t: np.ndarray, vel: np.ndarray, frac: float = 0.05, gap: float = 0.15) -> np.ndarray:
     """Moving = actual speed above 5% of the top speed, with gaps shorter than 'gap' seconds closed
     (used when the recording has no desired position)."""
@@ -231,6 +254,8 @@ def move_metrics(t: np.ndarray, pe: np.ndarray, moving: np.ndarray | None = None
             m.following_neg = float(np.mean(pe[cruise & (vref < 0)]))
         if np.any(cruise):
             m.cruise_ripple = float(np.std(pe[cruise] - np.where(vref[cruise] > 0, m.following_pos or 0, m.following_neg or 0)))
+            m.vib_amp = m.cruise_ripple * np.sqrt(2)
+            m.vib_freq = _main_freq(t, pe, cruise)
     # standstill segments after a motion
     best = None
     edges = np.flatnonzero(np.diff(moving.astype(int)))

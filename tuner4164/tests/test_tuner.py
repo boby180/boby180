@@ -471,3 +471,47 @@ def test_loop_guard_leaves_a_sensor_fix_alone():
     adv = Advice(status="change", changes=[Change("AG", -11012, 6.17, "sensor")])
     assert guard(adv, run("now", 20, 1.5), [run("a", 20, 0.8), run("b", 24, 1.2), run("c", 29, 1.3)]) == []
     assert [c.param for c in adv.changes] == ["AG"]
+
+
+from tune4164.analysis import TachoMetrics  # noqa: E402
+
+GOOD_TACHO = TachoMetrics(gain=1.0, offset=0, correlation=0.9999, residual_pct=1, ok=True)
+
+
+def _cruise_with_ripple(amp, freq):
+    t = np.arange(0, 12, 0.003)
+    vref = np.where((t > 1) & (t < 9), 50000.0, 0.0)
+    pe = np.where(vref > 0, amp * np.sin(2 * np.pi * freq * t), 0.0)
+    return t, vref, pe
+
+
+def test_vibration_while_moving_with_noisy_command_lowers_kd_first():
+    from tune4164.analysis import CommandMetrics
+    t, vref, pe = _cruise_with_ripple(70, 4.0)
+    mv = move_metrics(t, pe, vref > 0, vref=vref)
+    assert abs(mv.vib_freq - 4.0) < 0.3 and abs(mv.vib_amp - 70) < 5
+    an = Analysis(move=mv, command=CommandMetrics(saturated_pct=0, noise_ratio=1.06, peak=8846, ok=True),
+                  tacho=GOOD_TACHO)
+    adv = advise("PIV", "full", {**FULL_GAINS, "KD[1]": 7100, "KD[2]": 7100, "KD[3]": 7100}, an)
+    assert adv.primary.items() == [("KD[1]", 7100, 3550), ("KD[2]", 7100, 3550), ("KD[3]", 7100, 3550)]
+    assert any("רעידות" in f for f in adv.findings)
+
+
+def test_slow_vibration_with_smooth_command_lowers_kp():
+    from tune4164.analysis import CommandMetrics
+    t, vref, pe = _cruise_with_ripple(40, 3.0)
+    an = Analysis(move=move_metrics(t, pe, vref > 0, vref=vref),
+                  command=CommandMetrics(saturated_pct=0, noise_ratio=0.05, peak=3000, ok=True), tacho=GOOD_TACHO)
+    adv = advise("PIV", "full", FULL_GAINS, an)
+    assert adv.primary.param == "KP[1]" and adv.primary.factor == 0.75
+
+
+def test_loop_guard_ignores_a_one_percent_neighbour():
+    from tune4164.advise import ALL, Advice, gain_change
+    from tune4164.loopguard import guard
+    g = lambda kd: {f"KD[{i}]": kd for i in (1, 2, 3)}
+    old = {"rec_key": "a", "recording": "a", "test": "full", "gains": g(7200), "metrics": {"settle": 0.8}}
+    cur = {"rec_key": "b", "recording": "b", "test": "full", "gains": g(7100), "metrics": {"settle": 1.5}}
+    adv = Advice(status="change", changes=[gain_change(cur["gains"], "KD", ALL, 0.5, "shaking")])
+    guard(adv, cur, [old])
+    assert adv.primary.new == 3550                 # not turned into 7100 -> 7200 (+1%)

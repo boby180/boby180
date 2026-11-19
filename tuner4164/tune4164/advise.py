@@ -227,7 +227,7 @@ def advise(mode: str, test: str, gains: dict[str, int | None], an: Analysis) -> 
             adv.findings.append(mv.note if mv else "לא נבחרה עמודת שגיאת מיקום (PE)")
             adv.status = "stop"
             return adv
-        _move_advice(mv, adv, add)
+        _move_advice(mv, adv, add, an.command)
         if not adv.changes:
             adv.findings.append("התנועה נראית טובה. אין צורך לשנות.")
 
@@ -236,11 +236,33 @@ def advise(mode: str, test: str, gains: dict[str, int | None], an: Analysis) -> 
     return adv
 
 
-def _move_advice(mv, adv: Advice, add) -> None:
+VIB_COUNTS = 20      # ripple amplitude (counts) while cruising that counts as vibration
+NOISY_CMD = 0.5      # driver-command jitter that counts as very noisy
+
+
+def _move_advice(mv, adv: Advice, add, cmd=None) -> None:
     fol = [abs(x) for x in (mv.following_pos, mv.following_neg) if x is not None]
     if fol:
         adv.findings.append(f"פיגור בזמן נסיעה במהירות קבועה: {max(fol):.0f} ספירות"
                             + (f", אדוות ±{mv.cruise_ripple:.0f}" if mv.cruise_ripple is not None else ""))
+    # vibration while moving comes first: nothing else can be judged while the axis shakes
+    noisy = cmd is not None and cmd.ok and cmd.noise_ratio > NOISY_CMD
+    shaking = mv.vib_amp > max(VIB_COUNTS, 2 * mv.tolerance)
+    if shaking or noisy:
+        what = (f"רעידות בזמן הנסיעה: שגיאת המיקום רועדת ±{mv.vib_amp:.0f} ספירות"
+                + (f" בתדר של כ-{mv.vib_freq:.1f}Hz" if mv.vib_freq else "") if shaking else "")
+        if noisy:
+            what += ("; " if what else "") + f"פקודת הדרייבר רועשת מאוד (רעש {cmd.noise_ratio:.2f})"
+        adv.findings.append("✘ " + what + ". מתקנים את זה לפני ההתייצבות והחיכוך.")
+        if noisy or (mv.vib_freq or 0) > 15:
+            add("KD", ALL, 0.5 if (noisy and cmd.noise_ratio > 0.8) or mv.vib_amp > 3 * VIB_COUNTS else 0.7,
+                "לולאת המהירות חזקה מדי: פקודת הדרייבר קופצת והציר רועד. מורידים KD (בשלוש הקבוצות). אחרי תיקון "
+                "גדול של AG זה צפוי: הגבר הטאכו גדל, ולכן אותו KD נותן לולאת מהירות חזקה יותר באותו יחס.")
+        else:
+            add("KP", ALL, 0.75, f"רעידה איטית בזמן הנסיעה ({mv.vib_freq:.1f}Hz) עם פקודת דרייבר חלקה: לולאת המיקום "
+                                 "חזקה מדי. מורידים KP. אם זה לא עוזר, הרעידה כנראה מכנית (תמסורת או אנקודר), "
+                                 "ובודקים אם התדר שלה משתנה עם המהירות.")
+        return
     if not mv.has_stop:
         adv.findings.append(mv.note)
         return
@@ -361,16 +383,16 @@ def _full(mode: str, gains: dict, an: Analysis, adv: Advice) -> Advice:
     if cmd and cmd.ok and cmd.saturated_pct > 2:
         adv.findings.append("הפקודה למנוע ברוויה: הקטן מהירות או תאוצה והקלט שוב לפני שינוי כיול.")
     else:
-        if cmd and cmd.ok and cmd.noise_ratio > 0.15:
-            loop_add("KD", ALL, 0.8, "פקודת הדרייבר רועשת: בדרך כלל KD גבוה מדי.")
         if an.move and an.move.ok:
-            _move_advice(an.move, loop, loop_add)
+            _move_advice(an.move, loop, loop_add, cmd)
         elif an.step and an.step.ok:
             sub = advise(mode, "position_step", gains, Analysis(step=an.step))
             loop.findings += sub.findings
             loop.changes += sub.changes
         else:
             loop.findings.append("אין בהקלטה שגיאת מיקום או מיקום רצוי, ולכן הלולאה לא נבדקה.")
+        if not loop.changes and cmd and cmd.ok and cmd.noise_ratio > 0.15:
+            loop_add("KD", ALL, 0.8, "פקודת הדרייבר רועשת: בדרך כלל KD גבוה מדי.")
     adv.findings += loop.findings
     adv.changes += loop.changes
     if not loop.changes and an.move and an.move.ok:
