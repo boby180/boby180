@@ -1,0 +1,54 @@
+name: Ali Tracker EXE
+
+on:
+  push:
+    paths:
+      - "ali_tracker/**"
+      - ".github/workflows/ali-tracker-exe.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write    # publishes the EXE as a release asset
+
+jobs:
+  build:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: ali_tracker
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install
+        run: python -m pip install -r requirements.txt pyinstaller
+      - name: Tests
+        run: python -m pytest -q
+      - name: Build
+        run: python -m PyInstaller --noconfirm --clean --onefile --windowed --name AliTracker main.py
+      - name: Self-test the EXE
+        shell: pwsh
+        run: |
+          $p = Start-Process -FilePath dist\AliTracker.exe -ArgumentList "selftest","$PWD\selftest.txt" -Wait -PassThru
+          if (Test-Path selftest.txt) { Get-Content selftest.txt -Encoding utf8 }
+          if ($p.ExitCode -ne 0) { throw "self-test failed with exit code $($p.ExitCode)" }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AliTracker-windows
+          path: ali_tracker/dist/AliTracker.exe
+      - name: Publish a direct download link
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete ali-tracker-latest --cleanup-tag --yes || true
+          gh release create ali-tracker-latest dist/AliTracker.exe \
+            --target "$GITHUB_SHA" --latest=false \
+            --title "Ali Tracker for Windows" \
+            --notes "Download AliTracker.exe and double-click it. No installation needed."
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: selftest
+          path: ali_tracker/selftest.txt
