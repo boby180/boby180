@@ -19,10 +19,13 @@ class SyncSignals(QObject):
 
 
 class SyncJob(QRunnable):
-    def __init__(self, address: str, password: str, days: int, after_uid: int, validity: str):
+    def __init__(self, address: str, password: str, days: int, after_uid: int, validity: str,
+                 signals: SyncSignals):
         super().__init__()
         self.args = (address, password, days, after_uid, validity)
-        self.signals = SyncSignals()
+        # האות שייך לחלון ולא לעבודה: QThreadPool מוחק את העבודה מיד כשהיא מסתיימת,
+        # ואז הודעה שעוד ממתינה בתור (למשל "ההתחברות נכשלה") הייתה הולכת לאיבוד.
+        self.signals = signals
 
     def run(self) -> None:
         address, password, days, after_uid, validity = self.args

@@ -45,3 +45,42 @@ def test_window(tmp_path, monkeypatch):
     texts = " ".join(lbl.text() for lbl in w.details.findChildren(type(w.banner)))
     assert "נקודת האיסוף" in texts and "Sport Insoles" in texts
     w.close()
+
+
+@pytest.mark.parametrize("fail", [False, True])
+def test_sync_result_reaches_window(tmp_path, monkeypatch, fail):
+    """התוצאה של הסנכרון ברקע חייבת להגיע לחלון, גם כשההתחברות נכשלת."""
+    import gc
+    import time
+
+    from PySide6.QtCore import QTimer
+    from PySide6.QtWidgets import QMessageBox
+
+    from ali_tracker import mail
+    from ali_tracker.secret import protect
+
+    def fake_fetch(*args, progress=None, **kw):
+        time.sleep(0.3)
+        gc.collect()
+        if fail:
+            raise mail.MailError("Gmail סירב להתחבר")
+        return samples.demo_mails(), 9, "1"
+
+    shown = []
+    monkeypatch.setattr(mail, "fetch", fake_fetch)
+    monkeypatch.setattr(QMessageBox, "warning", lambda *a: shown.append(a[2]))
+    monkeypatch.setattr(QMessageBox, "information", lambda *a: shown.append(a[2]))
+    monkeypatch.setattr(MainWindow, "_load_image", lambda self, url, label: label.setText("img"))
+    cfg = Config(data_dir=str(tmp_path), gmail="me@gmail.com", app_password=protect("x"),
+                 auto_sync_minutes=0)
+    app = QApplication.instance() or QApplication([])
+    w = MainWindow(cfg)
+    QTimer.singleShot(50, lambda: w.sync(quiet=False))
+    QTimer.singleShot(2500, app.quit)
+    app.exec()                       # (QTest.qWait לא משחרר את ה-GIL, ואז הרקע לא רץ)
+    assert not w.syncing and w.sync_btn.isEnabled()
+    if fail:
+        assert shown and "סירב" in shown[0]
+    else:
+        assert w.table.rowCount() == 4
+    w.close()

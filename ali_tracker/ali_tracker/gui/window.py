@@ -16,7 +16,7 @@ from ..secret import unprotect
 from ..status import DELIVERED, LABEL, advice
 from ..store import Row, Store
 from .settings import SettingsDialog
-from .workers import ImageJob, ImageSignals, SyncJob, image_path
+from .workers import ImageJob, ImageSignals, SyncJob, SyncSignals, image_path
 
 COLUMNS = ["מספר מעקב", "מה בפנים", "סטטוס", "מה לעשות", "עדכון אחרון", "ימים"]
 FILTERS = [("פעילות", "active"), ("דורשות פעולה", "urgent"), ("הכול", "all")]
@@ -50,6 +50,11 @@ class MainWindow(QMainWindow):
         self.pool = QThreadPool(self)
         self.syncing = False
         self.rows: list[Row] = []
+        self.sync_signals = SyncSignals(self)
+        self.sync_signals.progress.connect(self._sync_progress)
+        self.sync_signals.done.connect(self._sync_done)
+        self.sync_signals.failed.connect(self._sync_failed)
+        self.sync_quiet = False
         self.img_signals = ImageSignals(self)
         self.img_signals.ready.connect(self._image_ready)
         self.img_labels: dict[str, list[QLabel]] = {}
@@ -165,14 +170,16 @@ class MainWindow(QMainWindow):
         self.syncing = True
         self.sync_btn.setEnabled(False)
         self.sync_btn.setText("מסנכרן…")
-        job = SyncJob(self.cfg.gmail, unprotect(self.cfg.app_password), self.cfg.days_back,
-                      int(self.store.get_meta("last_uid", "0") or 0),
-                      self.store.get_meta("uidvalidity"))
-        job.signals.progress.connect(
-            lambda n, total: self.status.showMessage(f"קורא מיילים מ-Gmail… {n}/{total}"))
-        job.signals.done.connect(self._sync_done)
-        job.signals.failed.connect(lambda msg: self._sync_failed(msg, quiet))
-        self.pool.start(job)
+        self.sync_quiet = quiet
+        self.status.showMessage(f"מתחבר ל-Gmail ({self.cfg.gmail})…")
+        self.sync_job = SyncJob(self.cfg.gmail, unprotect(self.cfg.app_password), self.cfg.days_back,
+                                int(self.store.get_meta("last_uid", "0") or 0),
+                                self.store.get_meta("uidvalidity"), self.sync_signals)
+        self.sync_job.setAutoDelete(False)
+        self.pool.start(self.sync_job)
+
+    def _sync_progress(self, n: int, total: int) -> None:
+        self.status.showMessage(f"קורא מיילים של אלי אקספרס מ-Gmail… {n} מתוך {total}")
 
     def _sync_done(self, events, max_uid: int, validity: str) -> None:
         for ev in events:
@@ -181,10 +188,17 @@ class MainWindow(QMainWindow):
         self.store.set_meta("uidvalidity", validity)
         self.store.set_meta("last_sync", datetime.now(timezone.utc).isoformat())
         self._sync_finished()
-        self.status.showMessage(f"הסנכרון הסתיים: {len(events)} מיילים חדשים.", 8000)
         self.refresh()
+        self.status.showMessage(f"הסנכרון הסתיים: נקראו {len(events)} מיילים חדשים. " +
+                                self.status.currentMessage(), 15000)
+        if not events and not self.rows and not self.sync_quiet:
+            QMessageBox.information(
+                self, "לא נמצאו מיילים",
+                f"ההתחברות ל-Gmail הצליחה, אבל לא נמצאו מיילים מ-aliexpress.com "
+                f"ב-{self.cfg.days_back} הימים האחרונים בתיבה {self.cfg.gmail}.")
 
-    def _sync_failed(self, msg: str, quiet: bool) -> None:
+    def _sync_failed(self, msg: str) -> None:
+        quiet = self.sync_quiet
         self._sync_finished()
         self.status.showMessage("הסנכרון נכשל", 10000)
         if not quiet:
