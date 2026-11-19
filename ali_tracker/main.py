@@ -49,6 +49,26 @@ def selftest(report: str) -> int:
         lines.append("imap: ok, reached imap.gmail.com")
     except Exception as e:
         lines.append(f"imap: could not reach imap.gmail.com ({e})")
+    try:                                      # תמונת מוצר אמיתית מהשרת של אלי אקספרס
+        from PySide6.QtCore import QTimer
+        from PySide6.QtWidgets import QApplication
+
+        from ali_tracker.gui.images import ImageLoader
+        app = QApplication.instance() or QApplication(sys.argv[:1])
+        url = "https://ae-pic-a1.aliexpress-media.com/kf/S804c312f617c4d0386bd2795c228a27cS.jpg"
+        cache = Path(tempfile.mkdtemp())
+        got = []
+        ImageLoader(cache).get(url, got.append)
+        timer = QTimer()
+        timer.timeout.connect(lambda: got and app.quit())
+        timer.start(100)
+        QTimer.singleShot(30000, app.quit)
+        app.exec()
+        log = (cache / "errors.log").read_text(encoding="utf-8") if (cache / "errors.log").exists() else ""
+        lines.append(f"image: {'ok ' + str(Path(got[0]).stat().st_size) + ' bytes' if got and got[0] else 'FAILED'}"
+                     + (f"\n{log}" if log else ""))
+    except Exception:
+        lines.append("image: FAILED\n" + traceback.format_exc())
     Path(report).write_text("\n".join(lines) + "\n", encoding="utf-8")
     return 0 if ok else 1
 

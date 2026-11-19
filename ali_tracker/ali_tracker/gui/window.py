@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from pathlib import Path
 
 from PySide6.QtCore import QSize, Qt, QThreadPool, QTimer, QUrl
 from PySide6.QtGui import QColor, QDesktopServices, QFont, QPixmap
@@ -16,7 +15,8 @@ from ..secret import unprotect
 from ..status import DELIVERED, LABEL, advice
 from ..store import Row, Store
 from .settings import SettingsDialog
-from .workers import ImageJob, ImageSignals, SyncJob, SyncSignals, image_path
+from .images import ImageLoader
+from .workers import SyncJob, SyncSignals
 
 COLUMNS = ["מספר מעקב", "מה בפנים", "סטטוס", "מה לעשות", "עדכון אחרון", "ימים"]
 FILTERS = [("פעילות", "active"), ("דורשות פעולה", "urgent"), ("הכול", "all")]
@@ -55,9 +55,7 @@ class MainWindow(QMainWindow):
         self.sync_signals.done.connect(self._sync_done)
         self.sync_signals.failed.connect(self._sync_failed)
         self.sync_quiet = False
-        self.img_signals = ImageSignals(self)
-        self.img_signals.ready.connect(self._image_ready)
-        self.img_labels: dict[str, list[QLabel]] = {}
+        self.images = ImageLoader(cfg.image_dir, self)
 
         self.setWindowTitle("Ali Tracker – החבילות שלי מאלי אקספרס")
         self.resize(1150, 760)
@@ -310,7 +308,6 @@ class MainWindow(QMainWindow):
             if w:
                 w.hide()                 # מיד, כדי שהפרטים הישנים לא יופיעו מתחת לחדשים
                 w.deleteLater()
-        self.img_labels.clear()
         r = self._selected()
         if r is None:
             empty = QLabel("אין חבילות להצגה. לחץ «סנכרן עם Gmail»." if not self.rows
@@ -384,26 +381,14 @@ class MainWindow(QMainWindow):
         if not url:
             label.setText("—")
             return
-        path = image_path(self.cfg.image_dir, url)
-        if path.exists():
-            self._set_pixmap(label, str(path))
-            return
         label.setText("…")
-        self.img_labels.setdefault(url, []).append(label)
-        self.pool.start(ImageJob(url, self.cfg.image_dir, self.img_signals))
-
-    def _image_ready(self, url: str, path: str) -> None:
-        for label in self.img_labels.pop(url, []):
-            try:
-                self._set_pixmap(label, path)
-            except RuntimeError:                 # הפרטים הוחלפו בינתיים
-                pass
+        self.images.get(url, lambda path: self._set_pixmap(label, path))
 
     @staticmethod
     def _set_pixmap(label: QLabel, path: str) -> None:
-        pm = QPixmap(path)
+        pm = QPixmap(path) if path else QPixmap()
         if pm.isNull():
-            label.setText("—")
+            label.setText("אין\nתמונה")
         else:
             label.setPixmap(pm.scaled(70, 70, Qt.KeepAspectRatio, Qt.SmoothTransformation))
 

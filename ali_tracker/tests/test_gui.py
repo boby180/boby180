@@ -84,3 +84,59 @@ def test_sync_result_reaches_window(tmp_path, monkeypatch, fail):
     else:
         assert w.table.rowCount() == 4
     w.close()
+
+
+def test_images_download_with_fallback(tmp_path):
+    """תמונה נטענת; כתובת שלא עובדת עוברת לגרסה המוקטנת; כשלון נרשם ביומן."""
+    import http.server
+    import threading
+
+    from PySide6.QtCore import QBuffer, QByteArray, QIODevice, QTimer
+    from PySide6.QtGui import QColor, QImage
+
+    from ali_tracker.gui.images import ImageLoader
+
+    app = QApplication.instance() or QApplication([])
+    img = QImage(10, 10, QImage.Format_RGB32)
+    img.fill(QColor("red"))
+    ba = QByteArray()
+    buf = QBuffer(ba)
+    buf.open(QIODevice.WriteOnly)
+    img.save(buf, "JPG")
+    jpg = bytes(ba)
+
+    class H(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            if self.path.endswith("good.jpg") or self.path.endswith("_220x220.jpg"):
+                self.send_response(200)
+                self.send_header("Content-Type", "image/jpeg")
+                self.end_headers()
+                self.wfile.write(jpg)
+            else:
+                self.send_response(404)
+                self.end_headers()
+
+        def log_message(self, *a):
+            pass
+
+    srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{srv.server_address[1]}/kf/"
+    import ali_tracker.gui.images as images
+    orig = images.candidates
+    images.candidates = lambda u: [u] + ([u + "_220x220.jpg"] if u.endswith(".jpg") else [])
+    try:
+        loader = ImageLoader(tmp_path / "img")
+        got = {}
+        for name in ("good.jpg", "small.jpg", "none.gif"):
+            loader.get(base + name, lambda p, n=name: got.__setitem__(n, p))
+        QTimer.singleShot(3000, app.quit)
+        t = QTimer()
+        t.timeout.connect(lambda: len(got) == 3 and app.quit())
+        t.start(50)
+        app.exec()
+    finally:
+        images.candidates = orig
+        srv.shutdown()
+    assert got["good.jpg"] and got["small.jpg"] and got["none.gif"] == ""
+    assert "none.gif" in (tmp_path / "img" / "errors.log").read_text(encoding="utf-8")

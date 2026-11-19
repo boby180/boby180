@@ -1,11 +1,6 @@
 """עבודות רקע: משיכת מיילים והורדת תמונות, כדי שהחלון לא ייתקע."""
 from __future__ import annotations
 
-import hashlib
-import ssl
-import urllib.request
-from pathlib import Path
-
 from PySide6.QtCore import QObject, QRunnable, Signal
 
 from .. import mail
@@ -44,37 +39,3 @@ class SyncJob(QRunnable):
             self.signals.failed.emit(str(e))
         except Exception as e:
             self.signals.failed.emit(f"הסנכרון נכשל: {type(e).__name__}: {e}")
-
-
-class ImageSignals(QObject):
-    ready = Signal(str, str)                 # url, local path
-
-
-class ImageJob(QRunnable):
-    def __init__(self, url: str, cache: Path, signals: ImageSignals):
-        super().__init__()
-        self.url, self.cache, self.signals = url, cache, signals
-
-    def run(self) -> None:
-        path = image_path(self.cache, self.url)
-        try:
-            if not path.exists():
-                req = urllib.request.Request(_thumb(self.url), headers={"User-Agent": "Mozilla/5.0"})
-                with urllib.request.urlopen(req, timeout=20, context=ssl.create_default_context()) as r:
-                    data = r.read()
-                path.parent.mkdir(parents=True, exist_ok=True)
-                tmp = path.with_suffix(".part")
-                tmp.write_bytes(data)
-                tmp.replace(path)
-            self.signals.ready.emit(self.url, str(path))
-        except Exception:
-            pass
-
-
-def image_path(cache: Path, url: str) -> Path:
-    return cache / (hashlib.sha1(url.encode()).hexdigest()[:20] + ".jpg")
-
-
-def _thumb(url: str) -> str:
-    """גרסה קטנה של תמונת המוצר (שרת התמונות של אלי אקספרס תומך בסיומת _200x200.jpg)."""
-    return url + "_200x200.jpg" if url.lower().endswith((".jpg", ".jpeg", ".png", ".webp")) else url
