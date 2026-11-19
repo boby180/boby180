@@ -310,11 +310,47 @@ SENSOR_MAX_NOISE = 5.0    # % of the speed
 SENSOR_MAX_OFFSET = 2.0   # % of the reading at the top speed
 
 
+def zero_offset_change(gains: dict, still: float) -> Change | None:
+    """Step 1a: AS so the sensor reads 0 while the axis stands. The reading is (input - AS) x AG x 2^-AF, so
+    the input offset in A/D steps is still / (AG x 2^-AF)."""
+    ag, af, as_ = gains.get("AG"), gains.get("AF"), gains.get("AS")
+    if ag in (None, 0) or af is None or as_ is None:
+        return None
+    step = ag * 2.0 ** -af
+    delta = int(round(still / step))
+    if delta == 0:
+        return None
+    return Change("AS", as_, (as_ + delta) / as_ if as_ else 1.0,
+                  f"כשהציר עומד, הטאכו קורא {still:+.0f} במקום 0 (בערך {abs(delta)} צעדים של הכניסה האנלוגית). "
+                  f"משנים את AS מ-{as_} ל-{as_ + delta}. אחר כך בודקים ב-SC-Shell (Analog In) שכשהציר עומד AI מראה 0, "
+                  f"ואם לא, מזיזים את AS עוד צעד עד ש-AI=0. רק אחרי זה מקליטים שוב ומכיילים את AG.",
+                  (), {"AS": as_ + delta})
+
+
 def _sensor_checks(tm, gains: dict, adv: Advice) -> bool:
-    """All the speed-sensor checks; returns True when anything is not OK (then nothing else is advised)."""
+    """All the speed-sensor checks; returns True when anything is not OK (then nothing else is advised).
+    Order: 1a zero offset (AI = 0 at standstill, by AS) -> 1b gain and sign (AG) -> match, noise."""
     bad = False
     adv.findings.append(f"חיישן המהירות = {tm.gain:.4f} × מהירות האנקודר {tm.offset:+.0f}  "
                         f"(התאמה {tm.correlation:.5f}, רעש {tm.residual_pct:.2f}%, השהיה {tm.lag_samples} דגימות)")
+    # 1a: the reading at standstill must be 0 before AG can be calibrated
+    if tm.still_offset is not None:
+        zc = zero_offset_change(gains, tm.still_offset)
+        step = abs(gains["AG"] * 2.0 ** -gains["AF"]) if gains.get("AG") and gains.get("AF") is not None else None
+        if zc is not None or (step is None and abs(tm.still_offset) > 2):
+            adv.warnings.insert(0, f"האופסט של הטאכו לא מאופס: כשהציר עומד הוא קורא {tm.still_offset:+.0f} במקום 0. "
+                                   "קודם מאפסים אותו (AI=0 כשהציר עומד, בעזרת AS), ורק אחר כך מכיילים את AG: "
+                                   "עם אופסט ההגבר לא יתכייל לעולם.")
+            if zc is not None:
+                adv.changes.append(zc)
+            else:
+                adv.findings.append("כדי לחשב AS חדש טען את קובץ ה-PRM (צריך AS, AG ו-AF). בינתיים: ב-SC-Shell, "
+                                    "Analog In, משנים את AS עד ש-AI מראה 0 כשהציר עומד.")
+            return True
+        adv.findings.append(f"✔ אופסט הטאכו מאופס: כשהציר עומד הוא קורא {tm.still_offset:+.1f}.")
+    else:
+        adv.findings.append("בהקלטה אין מספיק זמן עמידה כדי לבדוק את אופסט הטאכו. בודקים ב-SC-Shell (Analog In) "
+                            "ש-AI מראה 0 כשהציר עומד, ורק אז ממשיכים ל-AG.")
     if tm.gain < 0:
         bad = True
         adv.warnings.insert(0, "חיישן המהירות (הטאכו) לא מכויל: הסימן שלו הפוך לאנקודר. צריך להפוך את סימן AG "
@@ -343,13 +379,8 @@ def _sensor_checks(tm, gains: dict, adv: Advice) -> bool:
         bad = True
         adv.findings.append(f"✘ רעש גבוה בטאכו ({tm.residual_pct:.1f}%, צריך פחות מ-{SENSOR_MAX_NOISE:.0f}%): "
                             "בודקים חיווט, הארקה ומיסוך של הטאכו.")
-    if tm.offset_pct > SENSOR_MAX_OFFSET:
-        bad = True
-        adv.findings.append(f"✘ לטאכו יש אופסט: הוא קורא {tm.offset:+.0f} גם כשהציר עומד ({tm.offset_pct:.1f}% מהקריאה "
-                            f"במהירות המרבית, צריך פחות מ-{SENSOR_MAX_OFFSET:.0f}%). מאפסים את האופסט בדרייבר או בכניסה "
-                            "האנלוגית.")
     if not bad:
-        adv.findings.append("✔ הטאכו תקין לגמרי (הגבר, סימן, התאמה, רעש ואופסט). עוברים לשלב 2.")
+        adv.findings.append("✔ הטאכו תקין לגמרי (אופסט, הגבר, סימן, התאמה ורעש). עוברים לשלב 2.")
     return bad
 
 

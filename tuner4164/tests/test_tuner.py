@@ -440,8 +440,7 @@ def test_big_sensor_gap_changes_only_ag_and_af():
 
 def test_sensor_offset_or_noise_also_blocks_the_loop():
     from tune4164.analysis import TachoMetrics
-    for tm in (TachoMetrics(gain=1.0, offset=400, correlation=0.9999, residual_pct=1, offset_pct=4, ok=True),
-               TachoMetrics(gain=1.0, offset=0, correlation=0.9999, residual_pct=8, ok=True),
+    for tm in (TachoMetrics(gain=1.0, offset=0, correlation=0.9999, residual_pct=8, ok=True),
                TachoMetrics(gain=1.0, offset=0, correlation=0.95, residual_pct=1, ok=True)):
         adv = advise("PIV", "full", FULL_GAINS, Analysis(tacho=tm))
         assert adv.changes == [] and adv.status == "stop" and any("שלב 2" in f and "לא נבדק" in f for f in adv.findings)
@@ -515,3 +514,30 @@ def test_loop_guard_ignores_a_one_percent_neighbour():
     adv = Advice(status="change", changes=[gain_change(cur["gains"], "KD", ALL, 0.5, "shaking")])
     guard(adv, cur, [old])
     assert adv.primary.new == 3550                 # not turned into 7100 -> 7200 (+1%)
+
+
+def test_tacho_offset_is_zeroed_with_as_before_ag():
+    """560-1: at standstill the sensor read +59 with AS=2038, AG=-11012, AF=11 (and its gain was 16%)."""
+    from tune4164.analysis import TachoMetrics
+    gains = {**FULL_GAINS, "AS": 2038, "AG": -11012, "AF": 11}
+    tm = TachoMetrics(gain=0.1621, offset=58, correlation=0.9997, residual_pct=2.3, still_offset=59, ok=True)
+    adv = advise("PIV", "full", gains, Analysis(tacho=tm))
+    assert [k for c in adv.changes for k, _, _ in c.items()] == ["AS"]      # AG waits for AI = 0
+    assert adv.primary.new == 2038 - 11 and "AI=0" in adv.warnings[0]
+
+
+def test_zeroed_tacho_goes_on_to_ag():
+    from tune4164.analysis import TachoMetrics
+    gains = {**FULL_GAINS, "AS": 2029, "AG": -11012, "AF": 11}
+    tm = TachoMetrics(gain=0.1621, offset=1, correlation=0.9997, residual_pct=2.3, still_offset=1.5, ok=True)
+    adv = advise("PIV", "full", gains, Analysis(tacho=tm))
+    assert adv.primary.param == "AG" and any("אופסט הטאכו מאופס" in f for f in adv.findings)
+
+
+def test_still_offset_is_measured_from_the_standstill_part():
+    from tune4164.analysis import tacho_metrics
+    t = np.linspace(0, 4, 4000)
+    vel = np.where((t > 1) & (t < 3), 10000.0, 0.0)
+    tacho = vel + 48
+    tm = tacho_metrics(vel, tacho)
+    assert abs(tm.still_offset - 48) < 0.5

@@ -69,6 +69,8 @@ class TachoMetrics:
     residual_pct: float = 0.0            # rms of tacho - fit, % of the speed rms
     lag_samples: int = 0                 # tacho delayed (+) or ahead (-) of the encoder speed
     offset_pct: float = 0.0              # offset, % of the sensor reading at the top speed
+    still_offset: float | None = None    # mean sensor reading while the axis stands (should be 0)
+    still_samples: int = 0
     ok: bool = False
     note: str = ""
 
@@ -304,6 +306,10 @@ def tacho_metrics(vel: np.ndarray, tacho: np.ndarray, max_lag: int = 40) -> Tach
     res = a - (m.gain * v + m.offset)
     m.residual_pct = float(np.std(res) / (np.std(a) + 1e-12) * 100)
     m.offset_pct = float(abs(m.offset) / (abs(m.gain) * np.max(np.abs(v)) + 1e-12) * 100)
+    still = np.abs(v) <= 0.005 * np.max(np.abs(v))
+    m.still_samples = int(still.sum())
+    if m.still_samples >= 20:
+        m.still_offset = float(np.mean(a[still]))
     x, y = a - a.mean(), v - v.mean()
     L = min(max_lag, n // 4)
     lags = range(-L, L + 1)
