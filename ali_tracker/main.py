@@ -58,7 +58,8 @@ def selftest(report: str) -> int:
         url = "https://ae-pic-a1.aliexpress-media.com/kf/S804c312f617c4d0386bd2795c228a27cS.jpg"
         cache = Path(tempfile.mkdtemp())
         got = []
-        ImageLoader(cache).get(url, got.append)
+        loader = ImageLoader(cache)
+        loader.get(url, got.append)
         timer = QTimer()
         timer.timeout.connect(lambda: got and app.quit())
         timer.start(100)
