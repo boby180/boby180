@@ -70,6 +70,9 @@ class TachoMetrics:
     lag_samples: int = 0                 # tacho delayed (+) or ahead (-) of the encoder speed
     offset_pct: float = 0.0              # offset, % of the sensor reading at the top speed
     still_offset: float | None = None    # mean sensor reading while the axis stands (should be 0)
+    ratio: float = 0.0                   # encoder speed / sensor (XVeldt / XAnlgInp) while moving
+    ratio_pos: float | None = None       # the same, moving forward / backward only
+    ratio_neg: float | None = None
     still_samples: int = 0
     ok: bool = False
     note: str = ""
@@ -310,6 +313,14 @@ def tacho_metrics(vel: np.ndarray, tacho: np.ndarray, max_lag: int = 40) -> Tach
     m.still_samples = int(still.sum())
     if m.still_samples >= 20:
         m.still_offset = float(np.mean(a[still]))
+    # XVeldt / XAnlgInp while moving (|speed| above 30% of the top), offset at standstill taken off
+    a0 = a - (m.still_offset or 0.0)
+    mov = np.abs(v) > 0.3 * np.max(np.abs(v))
+    if np.any(mov) and np.dot(a0[mov], a0[mov]) > 0:
+        m.ratio = float(np.dot(v[mov], a0[mov]) / np.dot(a0[mov], a0[mov]))
+        for side, sel in (("ratio_pos", mov & (v > 0)), ("ratio_neg", mov & (v < 0))):
+            if sel.sum() >= 10 and np.dot(a0[sel], a0[sel]) > 0:
+                setattr(m, side, float(np.dot(v[sel], a0[sel]) / np.dot(a0[sel], a0[sel])))
     x, y = a - a.mean(), v - v.mean()
     L = min(max_lag, n // 4)
     lags = range(-L, L + 1)

@@ -103,12 +103,13 @@ def sensor_change(gains: dict, meas_gain: float) -> Change | None:
     ag_new = int(round(ag_new))
     targets, extra = {"AG": ag_new}, []
     reason = (f"החיישן קורא {abs(meas_gain) * 100:.1f}% ממהירות האנקודר. לפי המדריך (סעיף 3.2) הם צריכים להיות שווים. "
-              f"ההגבר של החיישן הוא AG×2^-AF, וצריך להגדיל אותו פי {f:.3f}.")
+              f"ההגבר של החיישן הוא AG×2^-AF, ולכן AG חדש = AG × (Veldt / AnlgInp) = {ag} × {f:.3f}"
+              f" = {int(round(ag * f))}.")
     if af is not None and af_new != af:
         extra.append(("AF", af))
         targets["AF"] = af_new
-        reason += (f" AG לבד היה יוצא {int(round(ag * f))}, מחוץ לטווח (±{AG_LIMIT}), ולכן מקטינים גם את AF "
-                   f"מ-{af} ל-{af_new} (כל 1 פחות ב-AF מכפיל את ההגבר פי 2).")
+        reason += (f" זה מחוץ לטווח של AG (±{AG_LIMIT}), ולכן מקטינים גם את AF "
+                   f"מ-{af} ל-{af_new} (כל 1 פחות ב-AF מכפיל את ההגבר פי 2): AG={ag_new}, AF={af_new}.")
     if abs(f - 1) > BIG_SENSOR_FIX:
         reason += (f" זה שינוי גדול (פי {f:.1f}): בודקים במהירות נמוכה עם יד על לחצן החירום.")
     return Change("AG", ag, f, reason, tuple(extra), targets)
@@ -331,8 +332,13 @@ def _sensor_checks(tm, gains: dict, adv: Advice) -> bool:
     """All the speed-sensor checks; returns True when anything is not OK (then nothing else is advised).
     Order: 1a zero offset (AI = 0 at standstill, by AS) -> 1b gain and sign (AG) -> match, noise."""
     bad = False
-    adv.findings.append(f"חיישן המהירות = {tm.gain:.4f} × מהירות האנקודר {tm.offset:+.0f}  "
-                        f"(התאמה {tm.correlation:.5f}, רעש {tm.residual_pct:.2f}%, השהיה {tm.lag_samples} דגימות)")
+    r = tm.ratio or (1.0 / tm.gain if tm.gain else 0.0)
+    sides = ", ".join(f"{name} {v:.3f}" for name, v in (("קדימה", tm.ratio_pos), ("אחורה", tm.ratio_neg)) if v)
+    adv.findings.append(f"יחס מהירות האנקודר לטאכו (Veldt / AnlgInp) בזמן תנועה = {r:.3f}"
+                        + (f" ({sides})" if sides else "")
+                        + f". צריך להיות 1.000 (התאמה {tm.correlation:.5f}, רעש {tm.residual_pct:.2f}%, "
+                          f"השהיה {tm.lag_samples} דגימות)")
+    meas = 1.0 / r if r else tm.gain      # sensor / encoder, as the rest of the checks use it
     # 1a: the reading at standstill must be 0 before AG can be calibrated
     if tm.still_offset is not None:
         zc = zero_offset_change(gains, tm.still_offset)
@@ -351,22 +357,22 @@ def _sensor_checks(tm, gains: dict, adv: Advice) -> bool:
     else:
         adv.findings.append("בהקלטה אין מספיק זמן עמידה כדי לבדוק את אופסט הטאכו. בודקים ב-SC-Shell (Analog In) "
                             "ש-AI מראה 0 כשהציר עומד, ורק אז ממשיכים ל-AG.")
-    if tm.gain < 0:
+    if meas < 0:
         bad = True
         adv.warnings.insert(0, "חיישן המהירות (הטאכו) לא מכויל: הסימן שלו הפוך לאנקודר. צריך להפוך את סימן AG "
                                "(או את החיווט) לפני כל דבר אחר.")
         if gains.get("AG") is not None:
-            ch = sensor_change(gains, tm.gain)
+            ch = sensor_change(gains, meas)
             ch.targets["AG"] = -ch.targets["AG"]        # flip the sign (and fix the size, if needed)
             ch.reason = "הסימן של הטאכו הפוך לאנקודר: הופכים את סימן AG. " + ch.reason
             adv.changes.append(ch)
-    err = abs(abs(tm.gain) - 1.0)
+    err = abs(abs(meas) - 1.0)
     if err > SENSOR_GAIN_TOL:
         bad = True
-        if tm.gain >= 0:
-            adv.warnings.insert(0, sensor_warning(tm.gain))
+        if meas >= 0:
+            adv.warnings.insert(0, sensor_warning(meas))
             if gains.get("AG") is not None:
-                adv.changes.append(sensor_change(gains, tm.gain))
+                adv.changes.append(sensor_change(gains, meas))
             else:
                 adv.findings.append("כדי לחשב AG חדש טען את קובץ ה-PRM.")
     else:

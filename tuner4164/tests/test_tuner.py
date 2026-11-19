@@ -541,3 +541,14 @@ def test_still_offset_is_measured_from_the_standstill_part():
     tacho = vel + 48
     tm = tacho_metrics(vel, tacho)
     assert abs(tm.still_offset - 48) < 0.5
+
+
+def test_tacho_ratio_is_encoder_speed_over_sensor():
+    from tune4164.analysis import tacho_metrics
+    t = np.linspace(0, 6, 6000)
+    vel = np.where((t > 1) & (t < 2.5), 20000.0, np.where((t > 3.5) & (t < 5), -20000.0, 0.0))
+    tacho = vel / 6.17 + 59                       # 560-1: the sensor read about 1/6 of the speed, offset 59
+    tm = tacho_metrics(vel, tacho)
+    assert abs(tm.ratio - 6.17) < 0.01 and abs(tm.ratio_pos - 6.17) < 0.01 and abs(tm.ratio_neg - 6.17) < 0.01
+    adv = advise("PIV", "tacho", {"AS": 2029, "AG": -11012, "AF": 11}, Analysis(tacho=tacho_metrics(vel, vel / 6.17)))
+    assert any("Veldt / AnlgInp" in f and "6.170" in f for f in adv.findings)
