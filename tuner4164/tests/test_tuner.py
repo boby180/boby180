@@ -553,13 +553,28 @@ def test_tacho_ratio_is_encoder_speed_over_sensor():
     assert any("Veldt / AnlgInp" in f and "6.170" in f for f in adv.findings)
 
 
-def test_af_stays_11_and_drops_to_10_only_when_ag_does_not_fit():
+def test_af_never_moves_unless_ag_cannot_fit():
     from tune4164.advise import sensor_change
-    keep = sensor_change({"AG": -12341, "AF": 11}, 1 / 1.5)                 # AG -18512 fits: AF stays 11
+    keep = sensor_change({"AG": -12341, "AF": 11}, 1 / 1.5)                 # fits: AF stays 11
     assert [k for k, _, _ in keep.items()] == ["AG"] and keep.new == round(-12341 * 1.5)
     ten = sensor_change({"AG": -200000, "AF": 11}, 1 / 2.0)                 # -400000 does not fit: AF 10
     assert {k: n for k, _, n in ten.items()} == {"AG": -200000, "AF": 10}
-    now = sensor_change({"AG": -28787, "AF": 7}, 1 / 1.0)                   # X today: 230296 with AF 10
-    assert {k: n for k, _, n in now.items()} == {"AG": -230296, "AF": 10}
-    back = sensor_change({"AG": -4000, "AF": 9}, 1 / 1.0)                   # fits with 11: back to the default
-    assert {k: n for k, _, n in back.items()} == {"AG": -16000, "AF": 11}
+    x_now = sensor_change({"AG": -28787, "AF": 7}, 1.15)                    # X today, sensor 15% high
+    assert {k: n for k, _, n in x_now.items()} == {"AG": round(-28787 / 1.15)}   # AG down, AF stays 7
+
+
+def test_as_does_not_flicker_under_one_step():
+    from tune4164.advise import zero_offset_change
+    g = {"AS": 2028, "AG": -67922, "AF": 11}                                 # one A/D step = 33 counts/s
+    assert zero_offset_change(g, -16.6) is None                              # half a step: leave AS alone
+    assert zero_offset_change(g, -70).targets == {"AS": 2030}
+
+
+def test_step_back_never_undoes_a_sensor_fix():
+    from tune4164.history import compare, step_back
+    prev = _entry("r1", {"AG": -11012, "KD[1]": 8000}, {"settle": 1.0, "oscillations": 0},
+                  [{"param": "AG", "old": -11012, "new": -67922}])
+    cur = _entry("r2", {"AG": -67922, "KD[1]": 8000}, {"settle": "inf", "oscillations": 6})
+    c = compare(prev, cur)
+    assert c.verdict == "worse" and step_back(c, cur["gains"]) is None
+    assert any("הטאכו כויל מחדש" in n for n in c.notes)

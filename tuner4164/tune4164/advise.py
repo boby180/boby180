@@ -75,7 +75,7 @@ class Change:
 
 
 AG_LIMIT = 300000         # the largest AG the controller takes (about 300000, per the user)
-AF_DEFAULT = 11           # AF stays 11; 10 only when AG would leave its range
+AF_DEFAULT = 11           # the usual AF; the advice never moves AF unless AG would leave its range
 BIG_SENSOR_FIX = 0.25     # above this, AG is fixed together with an equivalent KP/KI/KD change
 
 
@@ -104,23 +104,16 @@ def sensor_change(gains: dict, meas_gain: float) -> Change | None:
         targets["AG"] = int(round(ag * f))
     else:
         total = ag * 2.0 ** -af * f                       # the sensor gain we want, AG x 2^-AF
-        af_new = AF_DEFAULT
+        af_new = af                                       # AF does not move unless AG cannot fit
         while abs(total * 2.0 ** af_new) > AG_LIMIT and af_new > 0:
-            af_new -= 1                                   # 11 by default, 10 only when AG would not fit
+            af_new -= 1
         ag_new = int(round(total * 2.0 ** af_new))
         targets["AG"] = ag_new
         if af_new != af:
             extra.append(("AF", af))
             targets["AF"] = af_new
-        if af_new == AF_DEFAULT and af != AF_DEFAULT:
-            reason += f" מחזירים את AF לברירת המחדל {AF_DEFAULT} (במקום {af}), ולכן AG={ag_new}."
-        elif af_new == AF_DEFAULT - 1:
-            reason += (f" עם AF={AF_DEFAULT}, AG היה יוצא {int(round(total * 2.0 ** AF_DEFAULT))}, מחוץ לטווח של AG "
-                       f"(±{AG_LIMIT}). לכן AF יורד ל-{af_new} (פי 2 בהגבר): AG={ag_new}, AF={af_new}.")
-        elif af_new < AF_DEFAULT - 1:
-            reason += (f" גם עם AF={AF_DEFAULT - 1} AG היה יוצא {int(round(total * 2.0 ** (AF_DEFAULT - 1)))}, מחוץ לטווח "
-                       f"(±{AG_LIMIT}), ולכן אין ברירה: AF={af_new}, AG={ag_new}. הגבר כל כך גדול הוא חריג: כדאי לוודא "
-                       f"שהטאכו מחובר ומוגדר נכון בדרייבר.")
+            reason += (f" עם AF={af}, AG היה יוצא {int(round(total * 2.0 ** af))}, מחוץ לטווח של AG (±{AG_LIMIT}). "
+                       f"לכן AF יורד ל-{af_new} (כל 1 פחות מכפיל את ההגבר פי 2): AG={ag_new}, AF={af_new}.")
     if abs(f - 1) > BIG_SENSOR_FIX:
         reason += (f" זה שינוי גדול (פי {f:.1f}): בודקים במהירות נמוכה עם יד על לחצן החירום.")
     return Change("AG", ag, f, reason, tuple(extra), targets)
@@ -329,9 +322,10 @@ def zero_offset_change(gains: dict, still: float) -> Change | None:
     if ag in (None, 0) or af is None or as_ is None:
         return None
     step = ag * 2.0 ** -af
-    delta = int(round(still / step))
-    if delta == 0:
+    steps = still / step
+    if abs(steps) < 1.0:          # under one A/D step the reading only flickers: AS stays (no 2028 <-> 2029)
         return None
+    delta = int(round(steps))
     return Change("AS", as_, (as_ + delta) / as_ if as_ else 1.0,
                   f"כשהציר עומד, הטאכו קורא {still:+.0f} במקום 0 (בערך {abs(delta)} צעדים של הכניסה האנלוגית). "
                   f"משנים את AS מ-{as_} ל-{as_ + delta}. אחר כך בודקים ב-SC-Shell (Analog In) שכשהציר עומד AI מראה 0, "

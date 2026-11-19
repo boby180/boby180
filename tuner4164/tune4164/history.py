@@ -121,6 +121,10 @@ def compare(prev: dict, cur: dict) -> Comparison:
     if adv:
         c.applied = all(cg.get(a["param"]) == a["new"] for a in adv)
         c.not_applied = [(a["param"], a["new"], cg.get(a["param"])) for a in adv if cg.get(a["param"]) != a["new"]]
+    sensor = [k for k in ("AS", "AG", "AF") if k in pg and k in cg and pg[k] != cg[k]]
+    if sensor:
+        c.notes.append(f"הטאכו כויל מחדש בין ההקלטות ({', '.join(sensor)}), ולכן ההשוואה של התנועה לא אומרת אם "
+                       "שינוי הטאכו היה נכון. את הטאכו בודקים רק מול האנקודר (שלב 1).")
     if prev.get("test") != cur.get("test"):
         c.notes.append("סוג הבדיקה שונה מההקלטה הקודמת, ולכן ההשוואה פחות אמינה.")
     ps, cs = prev.get("top_speed"), cur.get("top_speed")
@@ -160,7 +164,9 @@ def compare(prev: dict, cur: dict) -> Comparison:
 
 def step_back(comp: Comparison, gains: dict) -> Change | None:
     """The last advice was applied and made things worse: go back half way."""
-    adv = comp.prev.get("advice") or []
+    # only loop gains are ever stepped back: the speed sensor (AS / AG / AF) is calibrated against the
+    # encoder, not judged by how the motion looks
+    adv = [a for a in comp.prev.get("advice") or [] if a.get("param", "")[:3] in ("KP[", "KI[", "KD[")]
     if not (comp.verdict == "worse" and comp.applied and adv):
         return None
     first = adv[0]

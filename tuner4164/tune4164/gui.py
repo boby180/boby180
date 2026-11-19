@@ -600,7 +600,8 @@ class MainWindow(QMainWindow):
             if diff:
                 self.comparison.notes.insert(0, f"נשמר ל-\"{unit}\" למרות שה-PRM שונה מההקלטה הקודמת "
                                                 f"({', '.join(diff)}).")
-            back = step_back(self.comparison, gains) if not diff else None
+            sensor_fix = any(k in ("AS", "AG", "AF") for c in self.advice.changes for k, _, _ in c.items())
+            back = step_back(self.comparison, gains) if not diff and not sensor_fix else None
             if back is not None:
                 undone = {k for k, _, _ in back.items()}
                 self.advice.changes = [back] + [c for c in self.advice.changes
