@@ -355,3 +355,68 @@ def test_reanalysing_keeps_order_and_predecessor(tmp_path):
     assert [e["rec_key"] for e in h.for_axis("U", "Y")] == ["r1", "r2", "r3"]
     assert h.previous("U", "Y", "r1") is None and h.previous("U", "Y", "r3")["rec_key"] == "r2"
     assert h.previous("U", "Y", "r4")["rec_key"] == "r3"
+
+
+def _simulate(world, start=26, steps=10):
+    """A stuck axis whose rule always says 'raise KI'; world maps KI -> (settle, stuck time)."""
+    from tune4164.advise import Advice, _move_advice, gain_change
+    from tune4164.analysis import MoveMetrics
+    from tune4164.history import compare, step_back
+    from tune4164.loopguard import guard
+
+    def run(i, ki):
+        s, st = world[ki]
+        return {"axis": "Y", "unit": "U", "test": "full", "rec_key": f"r{i}", "recording": f"r{i}", "time": "",
+                "top_speed": 1, "gains": {"KI[2]": ki, "KI[3]": ki}, "metrics": {"settle": s, "stuck_time": st}}
+    seq = [run(1, 20)]
+    seq[0]["advice"] = [{"param": "KI[2]", "old": 20, "new": start}, {"param": "KI[3]", "old": 20, "new": start}]
+    ki, tried = start, [20]
+    for i in range(2, steps + 2):
+        tried.append(ki)
+        cur = run(i, ki)
+        comp = compare(seq[-1], cur)
+        adv = Advice(status="change")
+        s, st = world[ki]
+        mv = MoveMetrics(ok=True, has_stop=True, stop_time=1, end_error_peak=30, settle_after_end=s, final_error=1,
+                         tolerance=5, stick=True, stuck_error=30, stuck_time=st)
+        _move_advice(mv, adv, lambda p, sets, f, why: adv.changes.append(gain_change(cur["gains"], p, sets, f, why)))
+        back = step_back(comp, cur["gains"])
+        if back:
+            adv.changes = [back] + [c for c in adv.changes if c.param != back.param]
+        guard(adv, cur, seq)
+        if not adv.changes:
+            return tried, ki
+        cur["advice"] = [{"param": k, "old": o, "new": n} for k, o, n in adv.changes[0].items()]
+        seq.append(cur)
+        ki = adv.changes[0].new
+    return tried, None
+
+
+def test_loop_guard_stops_ping_pong_and_returns_to_best():
+    world = {20: (2.5, 2.0), 26: (1.2, 0.6), 34: (2.0, 0.9), 30: (1.4, 0.65), 28: (1.3, 0.62), 31: (1.5, 0.7),
+             39: (2.4, 1.2), 44: (2.6, 1.3)}
+    tried, final = _simulate(world)
+    assert final == 26                                   # converged on the best value
+    assert tried.count(34) == 1 and 39 not in tried and 44 not in tried
+
+
+def test_loop_guard_stops_endless_raising_when_nothing_improves():
+    world = {20: (2.5, 2.0), 26: (1.2, 0.6), 34: (2.0, 0.3), 44: (2.4, 0.2), 57: (2.6, 0.15), 39: (2.2, 0.25),
+             30: (1.6, 0.45), 74: (2.8, 0.1)}
+    tried, final = _simulate(world)
+    assert final is not None and max(tried) <= 44         # it stops instead of climbing for ever
+
+
+def test_loop_guard_lets_real_progress_continue():
+    world = {20: (2.5, 2.0), 26: (1.6, 1.2), 34: (1.1, 0.6), 44: (0.8, 0.35), 57: (1.5, 0.4), 50: (1.0, 0.4),
+             47: (0.85, 0.36)}
+    tried, final = _simulate(world)
+    assert final == 44 and tried[:4] == [20, 26, 34, 44]  # kept improving while it helped
+
+
+def test_all_suggestions_are_saved():
+    from tune4164.advise import Advice, Change
+    from tune4164.history import advice_fields
+    adv = Advice(changes=[Change("KI[2]", 20, 1.3, "a", (("KI[3]", 20),)), Change("KP[2]", 20, 0.8, "b")])
+    f = advice_fields(adv)
+    assert [len(a["items"]) for a in f["advice_all"]] == [2, 1] and f["advice_all"][1]["reason"] == "b"

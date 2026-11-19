@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
 )
 
 from .advise import SET_NAMES, TESTS, Advice, advise
+from .loopguard import best_run, guard
 from .history import (History, advice_fields, compare, extract_run, fingerprint, load_run, make_entry, other_unit,
                       run_document, step_back)
 from .analysis import Analysis, command_metrics, move_metrics, moving_from_velocity, step_metrics, tacho_metrics
@@ -606,7 +607,14 @@ class MainWindow(QMainWindow):
                                                 if not undone & {k for k, _, _ in c.items()}]
                 self.advice.status = "change"
             entry["verdict"] = self.comparison.verdict
-            entry.update(advice_fields(self.advice))
+        # loop guard: look at the whole sequence of this rotator and axis, not only the previous run
+        seq = self.history.for_axis(unit, axis)
+        keys = [e.get("rec_key") for e in seq]
+        seq = seq[:keys.index(entry["rec_key"])] if entry["rec_key"] in keys else seq
+        if seq:
+            for note in reversed(guard(self.advice, entry, seq)):
+                self.advice.warnings.insert(0, note)
+        entry.update(advice_fields(self.advice))
         self._archive(entry)
         self.history.put(entry)
         self._current_entry = entry
@@ -622,6 +630,7 @@ class MainWindow(QMainWindow):
         self.hist_table.setRowCount(len(rows))
         prev = None
         self._hist_rows = rows
+        best = best_run(rows)
         for r, e in enumerate(rows):
             m = e.get("metrics", {})
             changed = ""
@@ -629,13 +638,20 @@ class MainWindow(QMainWindow):
                 pg = prev.get("gains", {})
                 changed = ", ".join(f"{k}: {pg[k]}→{v}" for k, v in e.get("gains", {}).items() if k in pg and pg[k] != v)
             adv = e.get("advice") or []
-            cells = [e.get("time", ""), e.get("recording", ""), changed or ("—" if prev else "התחלה"),
+            cells = [("★ " if e is best else "") + e.get("time", ""), e.get("recording", ""), changed or ("—" if prev else "התחלה"),
                      _fmt_metric(m.get("settle"), "s"), _fmt_metric(m.get("stuck_time"), "s"),
                      _fmt_metric(m.get("end_peak"), ""), _fmt_metric(m.get("following"), ""),
                      {"better": "השתפר ✔", "worse": "החמיר ✘", "mixed": "מעורב", "same": "בלי שינוי"}.get(e.get("verdict"), ""),
                      ", ".join(f"{a['param']}={a['new']}" for a in adv) or "—"]
             for c, text in enumerate(cells):
                 item = QTableWidgetItem(text)
+                if c == 0 and e is best:
+                    item.setToolTip("הריצה הטובה ביותר עד עכשיו בציר הזה")
+                    item.setForeground(QColor("#1f9d55"))
+                if c == 8 and e.get("advice_all"):
+                    item.setToolTip("\n".join(
+                        f"{i + 1}. " + ", ".join(f"{x['param']} {x['old']}→{x['new']}" for x in a["items"])
+                        + f" ({a['pct']:+d}%)" for i, a in enumerate(e["advice_all"])))
                 if c == 7 and e.get("verdict") in ("better", "worse"):
                     item.setForeground(QColor("#1f9d55" if e["verdict"] == "better" else "#c62f2f"))
                 self.hist_table.setItem(r, c, item)
@@ -956,6 +972,13 @@ class MainWindow(QMainWindow):
             out.append("</table>")
         for n in c.notes:
             out.append(f"<p style='color:#b86e00'>⚠ {html.escape(n)}</p>")
+        if main:
+            seq = self.history.for_axis(self.unit.currentText(), self.axis.currentText())
+            best = best_run(seq)
+            if best is not None:
+                vals = ", ".join(f"{k}={v}" for k, v in best.get("gains", {}).items() if k[:3] in ("KP[", "KI[", "KD["))
+                out.append(f"<p>★ הריצה הטובה ביותר עד עכשיו: <b>{html.escape(best.get('recording', ''))}</b> "
+                           f"({html.escape(best.get('time', ''))}) {LRM}{html.escape(vals)}{LRM}</p>")
         if main and c.verdict == "better":
             out.append("<p>השינוי האחרון עזר. ממשיכים לפי ההמלצה למטה.</p>")
         elif main and c.verdict == "same" and c.changed:

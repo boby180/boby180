@@ -88,7 +88,10 @@ def make_entry(axis: str, test: str, gains: dict, an: Analysis, advice: Advice, 
 def advice_fields(advice: Advice) -> dict:
     """The change that was recommended now (the one the next recording will be judged against)."""
     return {"advice": [{"param": k, "old": o, "new": n} for c in advice.changes[:1] for k, o, n in c.items()],
-            "advice_pct": advice.changes[0].percent if advice.changes else None}
+            "advice_pct": advice.changes[0].percent if advice.changes else None,
+            # every suggestion of this run, in order (the first one is "do this now")
+            "advice_all": [{"items": [{"param": k, "old": o, "new": n} for k, o, n in c.items()],
+                            "pct": c.percent, "reason": c.reason} for c in advice.changes]}
 
 
 @dataclass

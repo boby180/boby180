@@ -43,15 +43,21 @@ class Change:
     factor: float
     reason: str
     extra: tuple = ()              # more (param, old) pairs changed by the same factor, e.g. KP[3]
+    targets: dict = field(default_factory=dict)   # explicit new values (set by the loop guard)
+
+    def _new_of(self, k: str, o: int | None) -> int | None:
+        if o is None:
+            return None
+        return self.targets[k] if k in self.targets else _scale(o, self.factor)
 
     @property
     def new(self) -> int | None:
-        return None if self.old is None else _scale(self.old, self.factor)
+        return self._new_of(self.param, self.old)
 
     def items(self) -> list[tuple[str, int | None, int | None]]:
         """Every parameter this change touches: (param, old, new)."""
         pairs = [(self.param, self.old)] + list(self.extra)
-        return [(k, o, None if o is None else _scale(o, self.factor)) for k, o in pairs]
+        return [(k, o, self._new_of(k, o)) for k, o in pairs]
 
     @property
     def complete(self) -> bool:
@@ -63,6 +69,8 @@ class Change:
 
     @property
     def percent(self) -> int:
+        if self.param in self.targets and self.old:
+            return int(round((self.targets[self.param] / self.old - 1) * 100))
         return int(round((self.factor - 1) * 100))
 
 
