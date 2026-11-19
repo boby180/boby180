@@ -75,6 +75,7 @@ class Change:
 
 
 AG_LIMIT = 32767          # AG is a 16-bit value
+AF_DEFAULT = 11           # AF stays 11; 10 only when AG would leave its range
 BIG_SENSOR_FIX = 0.25     # above this, AG is fixed together with an equivalent KP/KI/KD change
 
 
@@ -95,21 +96,31 @@ def sensor_change(gains: dict, meas_gain: float) -> Change | None:
     if ag is None:
         return None
     f = 1.0 / abs(meas_gain)
-    ag_new, af_new = ag * f, af
-    if af is not None:
-        while abs(ag_new) > AG_LIMIT and af_new > 0:
-            ag_new /= 2
-            af_new -= 1
-    ag_new = int(round(ag_new))
-    targets, extra = {"AG": ag_new}, []
+    targets, extra = {}, []
     reason = (f"החיישן קורא {abs(meas_gain) * 100:.1f}% ממהירות האנקודר. לפי המדריך (סעיף 3.2) הם צריכים להיות שווים. "
               f"ההגבר של החיישן הוא AG×2^-AF, ולכן AG חדש = AG × (Veldt / AnlgInp) = {ag} × {f:.3f}"
               f" = {int(round(ag * f))}.")
-    if af is not None and af_new != af:
-        extra.append(("AF", af))
-        targets["AF"] = af_new
-        reason += (f" זה מחוץ לטווח של AG (±{AG_LIMIT}), ולכן מקטינים גם את AF "
-                   f"מ-{af} ל-{af_new} (כל 1 פחות ב-AF מכפיל את ההגבר פי 2): AG={ag_new}, AF={af_new}.")
+    if af is None:
+        targets["AG"] = int(round(ag * f))
+    else:
+        total = ag * 2.0 ** -af * f                       # the sensor gain we want, AG x 2^-AF
+        af_new = AF_DEFAULT
+        while abs(total * 2.0 ** af_new) > AG_LIMIT and af_new > 0:
+            af_new -= 1                                   # 11 by default, 10 only when AG would not fit
+        ag_new = int(round(total * 2.0 ** af_new))
+        targets["AG"] = ag_new
+        if af_new != af:
+            extra.append(("AF", af))
+            targets["AF"] = af_new
+        if af_new == AF_DEFAULT and af != AF_DEFAULT:
+            reason += f" מחזירים את AF לברירת המחדל {AF_DEFAULT} (במקום {af}), ולכן AG={ag_new}."
+        elif af_new == AF_DEFAULT - 1:
+            reason += (f" עם AF={AF_DEFAULT}, AG היה יוצא {int(round(total * 2.0 ** AF_DEFAULT))}, מחוץ לטווח של AG "
+                       f"(±{AG_LIMIT}). לכן AF יורד ל-{af_new} (פי 2 בהגבר): AG={ag_new}, AF={af_new}.")
+        elif af_new < AF_DEFAULT - 1:
+            reason += (f" גם עם AF={AF_DEFAULT - 1} AG היה יוצא {int(round(total * 2.0 ** (AF_DEFAULT - 1)))}, מחוץ לטווח "
+                       f"(±{AG_LIMIT}), ולכן אין ברירה: AF={af_new}, AG={ag_new}. הגבר כל כך גדול הוא חריג: כדאי לוודא "
+                       f"שהטאכו מחובר ומוגדר נכון בדרייבר.")
     if abs(f - 1) > BIG_SENSOR_FIX:
         reason += (f" זה שינוי גדול (פי {f:.1f}): בודקים במהירות נמוכה עם יד על לחצן החירום.")
     return Change("AG", ag, f, reason, tuple(extra), targets)

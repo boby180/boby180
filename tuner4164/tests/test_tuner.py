@@ -552,3 +552,13 @@ def test_tacho_ratio_is_encoder_speed_over_sensor():
     assert abs(tm.ratio - 6.17) < 0.01 and abs(tm.ratio_pos - 6.17) < 0.01 and abs(tm.ratio_neg - 6.17) < 0.01
     adv = advise("PIV", "tacho", {"AS": 2029, "AG": -11012, "AF": 11}, Analysis(tacho=tacho_metrics(vel, vel / 6.17)))
     assert any("Veldt / AnlgInp" in f and "6.170" in f for f in adv.findings)
+
+
+def test_af_stays_11_and_drops_to_10_only_when_ag_does_not_fit():
+    from tune4164.advise import sensor_change
+    keep = sensor_change({"AG": -12341, "AF": 11}, 1 / 1.5)                 # AG -18512 fits: AF stays 11
+    assert [k for k, _, _ in keep.items()] == ["AG"] and keep.new == round(-12341 * 1.5)
+    ten = sensor_change({"AG": -20000, "AF": 11}, 1 / 2.0)                  # -40000 does not fit: AF 10
+    assert {k: n for k, _, n in ten.items()} == {"AG": -20000, "AF": 10}
+    back = sensor_change({"AG": -4000, "AF": 9}, 1 / 1.0)                   # fits with 11: back to the default
+    assert {k: n for k, _, n in back.items()} == {"AG": -16000, "AF": 11}
