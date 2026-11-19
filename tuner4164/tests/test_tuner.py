@@ -144,7 +144,10 @@ def test_tacho_gain_off_by_5_percent_suggests_new_ag():
     an = Analysis(tacho=tacho_metrics(vel, tacho))
     adv = advise("PIV", "tacho", {"AG": -48388, "AF": 11}, an)
     assert abs(an.tacho.gain - 1.05) < 0.005 and an.tacho.correlation > 0.999
-    assert adv.primary.param == "AG" and abs(adv.primary.new - (-48388 / an.tacho.gain)) <= 1
+    new = dict((k, n) for k, _, n in adv.primary.items())
+    gain = new["AG"] * 2.0 ** -new.get("AF", 11)              # the sensor gain is AG x 2^-AF
+    assert adv.primary.param == "AG" and abs(new["AG"]) <= 32767
+    assert abs(gain - (-48388 * 2.0 ** -11) / an.tacho.gain) < 0.001
 
 
 def test_tacho_within_2_percent_needs_no_change():
@@ -420,3 +423,33 @@ def test_all_suggestions_are_saved():
     adv = Advice(changes=[Change("KI[2]", 20, 1.3, "a", (("KI[3]", 20),)), Change("KP[2]", 20, 0.8, "b")])
     f = advice_fields(adv)
     assert [len(a["items"]) for a in f["advice_all"]] == [2, 1] and f["advice_all"][1]["reason"] == "b"
+
+
+def test_big_sensor_gap_keeps_ag_in_range_and_rescales_the_loop():
+    """New rotator 560-1: the sensor read 16% of the encoder speed with AG copied from another rotator."""
+    from tune4164.advise import sensor_change, sensor_warning
+    gains = {"AG": -11012, "AF": 11, **{f"{k}[{i}]": v for k, v in (("KP", 20), ("KI", 50), ("KD", 8000))
+                                         for i in (1, 2, 3)}}
+    c = sensor_change(gains, 0.1621)
+    new = {k: n for k, _, n in c.items()}
+    f = 1 / 0.1621
+    assert abs(new["AG"]) <= 32767 and new["AF"] == 9
+    assert abs(new["AG"] * 2.0 ** -new["AF"] / (-11012 * 2.0 ** -11) - f) < 0.01
+    assert new["KP[1]"] == round(20 * f) and new["KI[3]"] == round(50 / f) and new["KD[2]"] == round(8000 / f)
+    assert len(c.items()) == 11 and c.percent == round((f - 1) * 100)
+    assert "16.2%" in sensor_warning(0.1621)
+
+
+def test_small_sensor_fix_changes_only_ag():
+    from tune4164.advise import sensor_change
+    c = sensor_change({"AG": -17240, "AF": 11, "KP[1]": 20}, 0.9014)
+    assert [k for k, _, _ in c.items()] == ["AG"] and c.new == round(-17240 / 0.9014)
+
+
+def test_loop_guard_leaves_a_sensor_fix_alone():
+    from tune4164.advise import Advice, Change
+    from tune4164.loopguard import guard
+    run = lambda r, kp, s: {"rec_key": r, "recording": r, "test": "full", "gains": {"KP[1]": kp}, "metrics": {"settle": s}}
+    adv = Advice(status="change", changes=[Change("AG", -11012, 6.17, "sensor")])
+    assert guard(adv, run("now", 20, 1.5), [run("a", 20, 0.8), run("b", 24, 1.2), run("c", 29, 1.3)]) == []
+    assert [c.param for c in adv.changes] == ["AG"]

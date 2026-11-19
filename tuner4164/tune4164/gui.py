@@ -611,6 +611,9 @@ class MainWindow(QMainWindow):
         seq = self.history.for_axis(unit, axis)
         keys = [e.get("rec_key") for e in seq]
         seq = seq[:keys.index(entry["rec_key"])] if entry["rec_key"] in keys else seq
+        # only runs made with the same speed-sensor scale on the same controller can be compared
+        seq = [r for r in seq if all(r.get("gains", {}).get(k) == entry["gains"].get(k) for k in ("AG", "AF"))
+               and not other_unit(r.get("fingerprint"), entry["fingerprint"])]
         if seq:
             for note in reversed(guard(self.advice, entry, seq)):
                 self.advice.warnings.insert(0, note)
@@ -1081,7 +1084,11 @@ class MainWindow(QMainWindow):
                          + "".join(f"<li>{html.escape(m)}</li>" for m in missing)
                          + "</ul><p>ראה את ההסבר בכחול למעלה, או לחץ \"הסבר מלא: איזו הקלטה לעשות\".</p></div>")
         for w in a.warnings:
-            parts.append(f"<p style='color:#b86e00'>⚠ {html.escape(w)}</p>")
+            if w.startswith("חיישן המהירות (הטאכו) לא מכויל"):
+                parts.append("<div style='background:#fdecec; border:2px solid #c62f2f; padding:8px;'>"
+                             f"<p style='color:#a11d1d; font-size:12pt'><b>⚠ {html.escape(w)}</b></p></div>")
+            else:
+                parts.append(f"<p style='color:#b86e00'>⚠ {html.escape(w)}</p>")
         parts.append("<ul>" + "".join(f"<li>{html.escape(f)}</li>" for f in a.findings) + "</ul>")
         if a.status == "stop":
             parts.append("<p style='color:#c62f2f'><b>אין המלצה לשינוי מההקלטה הזו.</b></p>")

@@ -69,9 +69,59 @@ class Change:
 
     @property
     def percent(self) -> int:
-        if self.param in self.targets and self.old:
+        if self.param in self.targets and self.old and self.param != "AG":   # AG may move together with AF
             return int(round((self.targets[self.param] / self.old - 1) * 100))
         return int(round((self.factor - 1) * 100))
+
+
+AG_LIMIT = 32767          # AG is a 16-bit value
+BIG_SENSOR_FIX = 0.25     # above this, AG is fixed together with an equivalent KP/KI/KD change
+
+
+def sensor_warning(meas_gain: float) -> str:
+    pct = abs(meas_gain) * 100
+    out = (f"חיישן המהירות (הטאכו) לא מכויל: הוא קורא {pct:.1f}% ממהירות האנקודר (צריך 98%-102%). "
+           f"מתקנים אותו לפני כל שינוי אחר, כי לולאת המהירות עובדת לפיו.")
+    if abs(abs(meas_gain) - 1) > BIG_SENSOR_FIX:
+        out += (" פער כל כך גדול אומר בדרך כלל שה-AG הועתק ממסובב אחר: אנקודר ברזולוציה אחרת (PA[43]), "
+                "תמסורת אחרת או טאכו אחר.")
+    return out
+
+
+def sensor_change(gains: dict, meas_gain: float) -> Change | None:
+    """AG (and AF when AG would leave its range) so the sensor reads the encoder speed. For a big fix the
+    same change rescales KP x F, KI / F, KD / F: in PIV the velocity error is KP*PE - sensor, so this keeps
+    the motion exactly as it is now, only with correct units (instead of a velocity loop F times stiffer)."""
+    ag, af = gains.get("AG"), gains.get("AF")
+    if ag is None:
+        return None
+    f = 1.0 / abs(meas_gain)
+    ag_new, af_new = ag * f, af
+    if af is not None:
+        while abs(ag_new) > AG_LIMIT and af_new > 0:
+            ag_new /= 2
+            af_new -= 1
+    ag_new = int(round(ag_new))
+    targets, extra = {"AG": ag_new}, []
+    reason = (f"החיישן קורא {abs(meas_gain) * 100:.1f}% ממהירות האנקודר. לפי המדריך (סעיף 3.2) הם צריכים להיות שווים. "
+              f"ההגבר של החיישן הוא AG×2^-AF, וצריך להגדיל אותו פי {f:.3f}.")
+    if af is not None and af_new != af:
+        extra.append(("AF", af))
+        targets["AF"] = af_new
+        reason += (f" AG לבד היה יוצא {int(round(ag * f))}, מחוץ לטווח (±{AG_LIMIT}), ולכן מקטינים גם את AF "
+                   f"מ-{af} ל-{af_new} (כל 1 פחות ב-AF מכפיל את ההגבר פי 2).")
+    if abs(f - 1) > BIG_SENSOR_FIX:
+        for k, mul in (("KP", f), ("KI", 1 / f), ("KD", 1 / f)):
+            for i in (1, 2, 3):
+                key, v = f"{k}[{i}]", gains.get(f"{k}[{i}]")
+                if v is not None:
+                    extra.append((key, v))
+                    targets[key] = max(1, int(round(v * mul))) if v > 0 else v
+        reason += (f" השינוי גדול: אם משנים רק את AG, לולאת המהירות נעשית פי {f:.1f} חזקה יותר בבת אחת, וזה עלול "
+                   f"לגרום לתנודות חזקות ולרעש. לכן באותו שינוי מכפילים את KP פי {f:.2f} ומחלקים את KI ואת KD "
+                   f"ב-{f:.2f} (בשלוש הקבוצות). מתמטית התנועה נשארת כמו היום, אבל עכשיו החיישן מכויל, ומכאן ממשיכים "
+                   f"לכייל כרגיל. מי שמעדיף לשנות רק את AG חייב להוריד קודם את KD פי {f:.1f}.")
+    return Change("AG", ag, f, reason, tuple(extra), targets)
 
 
 def gain_change(gains: dict, base: str, sets: tuple, factor: float, why: str) -> Change:
@@ -131,11 +181,9 @@ def advise(mode: str, test: str, gains: dict[str, int | None], an: Analysis) -> 
         err = abs(abs(tm.gain) - 1.0)
         ag, af = g("AG"), g("AF")
         if err > 0.02:
+            adv.warnings.insert(0, sensor_warning(tm.gain))
             if ag is not None:
-                adv.changes.append(Change("AG", ag, 1.0 / abs(tm.gain),
-                                          f"החיישן קורא {abs(tm.gain) * 100:.1f}% ממהירות האנקודר. לפי המדריך (סעיף 3.2) "
-                                          f"מהירות החיישן צריכה להיות שווה למהירות האנקודר. ההגבר הוא AG×2^-AF"
-                                          + (f" (AF={af})" if af is not None else "") + ", ולכן משנים את AG."))
+                adv.changes.append(sensor_change(gains, tm.gain))
             else:
                 adv.findings.append("כדי לחשב AG חדש צריך את AG ו-AF של הציר (מה-PRM).")
         else:
@@ -279,10 +327,9 @@ def _full(mode: str, gains: dict, an: Analysis, adv: Advice) -> Advice:
         err = abs(abs(tm.gain) - 1.0)
         if err > 0.02:
             sensor_bad = True
+            adv.warnings.insert(0, sensor_warning(tm.gain))
             if g("AG") is not None:
-                adv.changes.append(Change("AG", g("AG"), 1.0 / abs(tm.gain),
-                    f"החיישן קורא {abs(tm.gain) * 100:.1f}% ממהירות האנקודר. לפי המדריך (סעיף 3.2) הם צריכים להיות "
-                    f"שווים. ההגבר הוא AG×2^-AF" + (f" (AF={g('AF')})" if g("AF") is not None else "") + "."))
+                adv.changes.append(sensor_change(gains, tm.gain))
             else:
                 adv.findings.append("כדי לחשב AG חדש טען את קובץ ה-PRM.")
         else:

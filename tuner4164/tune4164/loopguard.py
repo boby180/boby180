@@ -77,6 +77,8 @@ def _restore_best(advice: Advice, cur: dict, seq: list) -> list[str] | None:
 
 def guard(advice: Advice, cur: dict, seq: list) -> list[str]:
     """Adjust advice.changes in place; returns notes for the user. 'seq' = earlier runs of this axis."""
+    if any(not {k for k, _, _ in c.items()} <= _gain_keys({k: 0 for k, _, _ in c.items()}) for c in advice.changes):
+        return []   # a sensor (AG) fix comes first; gains measured with another sensor scale are not comparable
     done = _restore_best(advice, cur, seq)
     if done is not None:
         return done
