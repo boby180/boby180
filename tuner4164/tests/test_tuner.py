@@ -173,8 +173,9 @@ def test_full_test_fixes_the_speed_sensor_first():
     t, vref, pe, vel, tacho = _full_recording(0.90, 0.25)
     an = Analysis(tacho=tacho_metrics(vel, tacho), move=move_metrics(t, pe, np.abs(vref) > 0, vref=vref))
     adv = advise("PIV", "full", FULL_GAINS, an)
-    assert [c.param for c in adv.changes] == ["AG"]                 # loop changes wait for the sensor fix
-    assert any("אחרי תיקון החיישן" in f for f in adv.findings)
+    assert [k for c in adv.changes for k, _, _ in c.items()] == ["AG"]   # only the sensor, nothing else
+    assert any("שלב 2" in f and "לא נבדק" in f for f in adv.findings)
+    assert not any("פיגור" in f or "חיכוך" in f or "פקודת הדרייבר" in f for f in adv.findings)
     assert abs(an.move.following_neg + 140) < 1 and abs(an.move.following_pos - 115) < 1
     assert abs(an.move.final_error + 16) < 2
 
@@ -425,19 +426,36 @@ def test_all_suggestions_are_saved():
     assert [len(a["items"]) for a in f["advice_all"]] == [2, 1] and f["advice_all"][1]["reason"] == "b"
 
 
-def test_big_sensor_gap_keeps_ag_in_range_and_rescales_the_loop():
+def test_big_sensor_gap_changes_only_ag_and_af():
     """New rotator 560-1: the sensor read 16% of the encoder speed with AG copied from another rotator."""
     from tune4164.advise import sensor_change, sensor_warning
     gains = {"AG": -11012, "AF": 11, **{f"{k}[{i}]": v for k, v in (("KP", 20), ("KI", 50), ("KD", 8000))
                                          for i in (1, 2, 3)}}
     c = sensor_change(gains, 0.1621)
     new = {k: n for k, _, n in c.items()}
-    f = 1 / 0.1621
-    assert abs(new["AG"]) <= 32767 and new["AF"] == 9
-    assert abs(new["AG"] * 2.0 ** -new["AF"] / (-11012 * 2.0 ** -11) - f) < 0.01
-    assert new["KP[1]"] == round(20 * f) and new["KI[3]"] == round(50 / f) and new["KD[2]"] == round(8000 / f)
-    assert len(c.items()) == 11 and c.percent == round((f - 1) * 100)
+    assert list(new) == ["AG", "AF"] and abs(new["AG"]) <= 32767 and new["AF"] == 9
+    assert abs(new["AG"] * 2.0 ** -new["AF"] / (-11012 * 2.0 ** -11) - 1 / 0.1621) < 0.01
     assert "16.2%" in sensor_warning(0.1621)
+
+
+def test_sensor_offset_or_noise_also_blocks_the_loop():
+    from tune4164.analysis import TachoMetrics
+    for tm in (TachoMetrics(gain=1.0, offset=400, correlation=0.9999, residual_pct=1, offset_pct=4, ok=True),
+               TachoMetrics(gain=1.0, offset=0, correlation=0.9999, residual_pct=8, ok=True),
+               TachoMetrics(gain=1.0, offset=0, correlation=0.95, residual_pct=1, ok=True)):
+        adv = advise("PIV", "full", FULL_GAINS, Analysis(tacho=tm))
+        assert adv.changes == [] and adv.status == "stop" and any("שלב 2" in f and "לא נבדק" in f for f in adv.findings)
+
+
+def test_reversed_sensor_flips_ag():
+    from tune4164.analysis import TachoMetrics
+    adv = advise("PIV", "full", FULL_GAINS, Analysis(tacho=TachoMetrics(gain=-1.0, correlation=-0.9999, ok=True)))
+    assert adv.primary.items() == [("AG", -17240, 17240)]
+
+
+def test_piv_without_tacho_in_the_recording_stops_at_step_1():
+    adv = advise("PIV", "full", FULL_GAINS, Analysis())
+    assert adv.status == "stop" and "Analog Input" in adv.warnings[0]
 
 
 def test_small_sensor_fix_changes_only_ag():

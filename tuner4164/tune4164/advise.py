@@ -89,9 +89,8 @@ def sensor_warning(meas_gain: float) -> str:
 
 
 def sensor_change(gains: dict, meas_gain: float) -> Change | None:
-    """AG (and AF when AG would leave its range) so the sensor reads the encoder speed. For a big fix the
-    same change rescales KP x F, KI / F, KD / F: in PIV the velocity error is KP*PE - sensor, so this keeps
-    the motion exactly as it is now, only with correct units (instead of a velocity loop F times stiffer)."""
+    """AG (and AF only when AG would leave its 16-bit range) so the sensor reads the encoder speed.
+    Nothing else changes: the speed sensor is fixed first, on its own."""
     ag, af = gains.get("AG"), gains.get("AF")
     if ag is None:
         return None
@@ -111,16 +110,7 @@ def sensor_change(gains: dict, meas_gain: float) -> Change | None:
         reason += (f" AG לבד היה יוצא {int(round(ag * f))}, מחוץ לטווח (±{AG_LIMIT}), ולכן מקטינים גם את AF "
                    f"מ-{af} ל-{af_new} (כל 1 פחות ב-AF מכפיל את ההגבר פי 2).")
     if abs(f - 1) > BIG_SENSOR_FIX:
-        for k, mul in (("KP", f), ("KI", 1 / f), ("KD", 1 / f)):
-            for i in (1, 2, 3):
-                key, v = f"{k}[{i}]", gains.get(f"{k}[{i}]")
-                if v is not None:
-                    extra.append((key, v))
-                    targets[key] = max(1, int(round(v * mul))) if v > 0 else v
-        reason += (f" השינוי גדול: אם משנים רק את AG, לולאת המהירות נעשית פי {f:.1f} חזקה יותר בבת אחת, וזה עלול "
-                   f"לגרום לתנודות חזקות ולרעש. לכן באותו שינוי מכפילים את KP פי {f:.2f} ומחלקים את KI ואת KD "
-                   f"ב-{f:.2f} (בשלוש הקבוצות). מתמטית התנועה נשארת כמו היום, אבל עכשיו החיישן מכויל, ומכאן ממשיכים "
-                   f"לכייל כרגיל. מי שמעדיף לשנות רק את AG חייב להוריד קודם את KD פי {f:.1f}.")
+        reason += (f" זה שינוי גדול (פי {f:.1f}): בודקים במהירות נמוכה עם יד על לחצן החירום.")
     return Change("AG", ag, f, reason, tuple(extra), targets)
 
 
@@ -153,7 +143,7 @@ def advise(mode: str, test: str, gains: dict[str, int | None], an: Analysis) -> 
     if test == "full":
         return _full(mode, gains, an, adv)
 
-    cmd = an.command
+    cmd = an.command if test != "tacho" else None   # a sensor check advises the sensor only
     if cmd and cmd.ok:
         adv.findings.append(f"פקודת הדרייבר: שיא {cmd.peak:.0f}, רוויה {cmd.saturated_pct:.1f}% מהזמן, "
                             f"רעש {cmd.noise_ratio:.2f}")
@@ -172,27 +162,7 @@ def advise(mode: str, test: str, gains: dict[str, int | None], an: Analysis) -> 
             adv.findings.append(tm.note if tm else "בחר עמודת מהירות מהאנקודר ועמודת חיישן מהירות")
             adv.status = "stop"
             return adv
-        adv.findings.append(f"חיישן המהירות = {tm.gain:.4f} × מהירות האנקודר {tm.offset:+.1f}  "
-                            f"(התאמה {tm.correlation:.5f}, סטייה {tm.residual_pct:.2f}%, השהיה {tm.lag_samples} דגימות)")
-        if tm.correlation < 0.99:
-            adv.findings.append("ההתאמה בין החיישן לאנקודר חלשה: בדוק חיווט, הארקה ורעש בחיישן לפני כיול הלולאה.")
-        if tm.gain < 0:
-            adv.findings.append("הסימן של החיישן הפוך לאנקודר. צריך להפוך את סימן AG (או את חיווט החיישן).")
-        err = abs(abs(tm.gain) - 1.0)
-        ag, af = g("AG"), g("AF")
-        if err > 0.02:
-            adv.warnings.insert(0, sensor_warning(tm.gain))
-            if ag is not None:
-                adv.changes.append(sensor_change(gains, tm.gain))
-            else:
-                adv.findings.append("כדי לחשב AG חדש צריך את AG ו-AF של הציר (מה-PRM).")
-        else:
-            adv.findings.append(f"הכיול של חיישן המהירות טוב: הפרש של {err * 100:.2f}% בלבד (היעד: פחות מ-2%).")
-        if tm.residual_pct > 3:
-            adv.findings.append("יש רעש או אי-לינאריות בחיישן (סטייה מעל 3%). ייתכן שכדאי מסנן או בדיקת חיווט.")
-        if abs(tm.lag_samples) > 2:
-            adv.findings.append(f"החיישן מאחר ב-{tm.lag_samples} דגימות ביחס לאנקודר. השהיה כזו מגבילה את הגבר "
-                                "לולאת המהירות (KD).")
+        _sensor_checks(tm, gains, adv)
         adv.findings.append("ההקלטה הזו בודקת את חיישן המהירות, לא את הכיול של KP/KI/KD. להמלצות על הכיול צריך "
                             "הקלטה עם מיקום רצוי / שגיאת מיקום ופקודת דרייבר.")
         if adv.changes:
@@ -312,33 +282,75 @@ def _move_advice(mv, adv: Advice, add) -> None:
         add("KI", STOP, 1.25, f"נשארת שגיאת מיקום של {mv.final_error:.0f} ספירות בעמידה: מעלים KI." + stop_note)
 
 
+SENSOR_GAIN_TOL = 0.02    # 98%-102%
+SENSOR_MIN_CORR = 0.99
+SENSOR_MAX_NOISE = 5.0    # % of the speed
+SENSOR_MAX_OFFSET = 2.0   # % of the reading at the top speed
+
+
+def _sensor_checks(tm, gains: dict, adv: Advice) -> bool:
+    """All the speed-sensor checks; returns True when anything is not OK (then nothing else is advised)."""
+    bad = False
+    adv.findings.append(f"חיישן המהירות = {tm.gain:.4f} × מהירות האנקודר {tm.offset:+.0f}  "
+                        f"(התאמה {tm.correlation:.5f}, רעש {tm.residual_pct:.2f}%, השהיה {tm.lag_samples} דגימות)")
+    if tm.gain < 0:
+        bad = True
+        adv.warnings.insert(0, "חיישן המהירות (הטאכו) לא מכויל: הסימן שלו הפוך לאנקודר. צריך להפוך את סימן AG "
+                               "(או את החיווט) לפני כל דבר אחר.")
+        if gains.get("AG") is not None:
+            ch = sensor_change(gains, tm.gain)
+            ch.targets["AG"] = -ch.targets["AG"]        # flip the sign (and fix the size, if needed)
+            ch.reason = "הסימן של הטאכו הפוך לאנקודר: הופכים את סימן AG. " + ch.reason
+            adv.changes.append(ch)
+    err = abs(abs(tm.gain) - 1.0)
+    if err > SENSOR_GAIN_TOL:
+        bad = True
+        if tm.gain >= 0:
+            adv.warnings.insert(0, sensor_warning(tm.gain))
+            if gains.get("AG") is not None:
+                adv.changes.append(sensor_change(gains, tm.gain))
+            else:
+                adv.findings.append("כדי לחשב AG חדש טען את קובץ ה-PRM.")
+    else:
+        adv.findings.append(f"✔ ההגבר של הטאכו טוב: הפרש {err * 100:.2f}% (היעד: פחות מ-2%).")
+    if abs(tm.correlation) < SENSOR_MIN_CORR:
+        bad = True
+        adv.findings.append(f"✘ ההתאמה בין הטאכו לאנקודר חלשה ({tm.correlation:.4f}, צריך לפחות {SENSOR_MIN_CORR}): "
+                            "בודקים חיווט, הארקה ורעש בטאכו לפני כל דבר אחר.")
+    if tm.residual_pct > SENSOR_MAX_NOISE:
+        bad = True
+        adv.findings.append(f"✘ רעש גבוה בטאכו ({tm.residual_pct:.1f}%, צריך פחות מ-{SENSOR_MAX_NOISE:.0f}%): "
+                            "בודקים חיווט, הארקה ומיסוך של הטאכו.")
+    if tm.offset_pct > SENSOR_MAX_OFFSET:
+        bad = True
+        adv.findings.append(f"✘ לטאכו יש אופסט: הוא קורא {tm.offset:+.0f} גם כשהציר עומד ({tm.offset_pct:.1f}% מהקריאה "
+                            f"במהירות המרבית, צריך פחות מ-{SENSOR_MAX_OFFSET:.0f}%). מאפסים את האופסט בדרייבר או בכניסה "
+                            "האנלוגית.")
+    if not bad:
+        adv.findings.append("✔ הטאכו תקין לגמרי (הגבר, סימן, התאמה, רעש ואופסט). עוברים לשלב 2.")
+    return bad
+
+
 def _full(mode: str, gains: dict, an: Analysis, adv: Advice) -> Advice:
     """Speed sensor first (the velocity loop runs on it), then the position loop."""
     g = lambda k: gains.get(k)  # noqa: E731
     sensor_bad = False
-    adv.findings.append("שלב 1: חיישן המהירות מול האנקודר")
+    adv.findings.append("שלב 1: חיישן המהירות (טאכו) מול האנקודר")
     tm = an.tacho
     if tm and tm.ok:
-        adv.findings.append(f"חיישן המהירות = {tm.gain:.4f} × מהירות האנקודר {tm.offset:+.0f}  "
-                            f"(התאמה {tm.correlation:.5f}, סטייה {tm.residual_pct:.2f}%)")
-        if tm.gain < 0:
-            adv.findings.append("הסימן של החיישן הפוך לאנקודר: צריך להפוך את סימן AG או את החיווט.")
-            sensor_bad = True
-        err = abs(abs(tm.gain) - 1.0)
-        if err > 0.02:
-            sensor_bad = True
-            adv.warnings.insert(0, sensor_warning(tm.gain))
-            if g("AG") is not None:
-                adv.changes.append(sensor_change(gains, tm.gain))
-            else:
-                adv.findings.append("כדי לחשב AG חדש טען את קובץ ה-PRM.")
-        else:
-            adv.findings.append(f"החיישן מכויל טוב (הפרש {err * 100:.2f}%).")
-        if tm.correlation < 0.99:
-            adv.findings.append("ההתאמה בין החיישן לאנקודר חלשה: בדוק חיווט, הארקה ורעש.")
-            sensor_bad = True
+        sensor_bad = _sensor_checks(tm, gains, adv)
+    elif mode == "PIV":
+        sensor_bad = True
+        adv.warnings.insert(0, "חיישן המהירות (הטאכו) לא נבדק: אין בהקלטה כניסה אנלוגית (Analog Input) או מהירות "
+                               "אנקודר. ב-PIV לולאת המהירות עובדת לפי הטאכו, ולכן קודם מקליטים גם Analog Input "
+                               "ובודקים אותו.")
     else:
-        adv.findings.append("אין בהקלטה כניסה אנלוגית או מהירות אנקודר, ולכן החיישן לא נבדק.")
+        adv.findings.append("ב-PID אין חיישן מהירות, ולכן שלב 1 לא נדרש.")
+    if sensor_bad:
+        adv.findings.append("שלב 2 (לולאת הבקרה: KP / KI / KD) לא נבדק. עוברים אליו רק כשהטאכו תקין לגמרי: "
+                            "קודם מתקנים את הטאכו, מקליטים שוב, ורק אז ממשיכים.")
+        adv.status = "change" if adv.changes else "stop"
+        return adv
 
     adv.findings.append("שלב 2: לולאת הבקרה")
     cmd = an.command
@@ -360,14 +372,8 @@ def _full(mode: str, gains: dict, an: Analysis, adv: Advice) -> Advice:
         else:
             loop.findings.append("אין בהקלטה שגיאת מיקום או מיקום רצוי, ולכן הלולאה לא נבדקה.")
     adv.findings += loop.findings
-    if sensor_bad:
-        if loop.changes:
-            adv.findings.append("השינויים בלולאה ייבדקו אחרי תיקון החיישן: לולאת המהירות עובדת לפי החיישן, ולכן "
-                                "תקן קודם את AG, הקלט שוב ואז נבדוק את KP/KI/KD. מה שנראה כרגע: "
-                                + "; ".join(f"{c.label} {c.percent:+d}%" for c in loop.changes))
-    else:
-        adv.changes += loop.changes
-        if not loop.changes and an.move and an.move.ok:
-            adv.findings.append("הלולאה נראית טובה. אין צורך לשנות.")
+    adv.changes += loop.changes
+    if not loop.changes and an.move and an.move.ok:
+        adv.findings.append("הלולאה נראית טובה. אין צורך לשנות.")
     adv.status = "change" if adv.changes else "ok"
     return adv
