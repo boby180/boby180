@@ -146,7 +146,7 @@ def test_tacho_gain_off_by_5_percent_suggests_new_ag():
     assert abs(an.tacho.gain - 1.05) < 0.005 and an.tacho.correlation > 0.999
     new = dict((k, n) for k, _, n in adv.primary.items())
     gain = new["AG"] * 2.0 ** -new.get("AF", 11)              # the sensor gain is AG x 2^-AF
-    assert adv.primary.param == "AG" and abs(new["AG"]) <= 32767
+    assert adv.primary.param == "AG" and abs(new["AG"]) <= 300000
     assert abs(gain - (-48388 * 2.0 ** -11) / an.tacho.gain) < 0.001
 
 
@@ -433,8 +433,7 @@ def test_big_sensor_gap_changes_only_ag_and_af():
                                          for i in (1, 2, 3)}}
     c = sensor_change(gains, 0.1621)
     new = {k: n for k, _, n in c.items()}
-    assert list(new) == ["AG", "AF"] and abs(new["AG"]) <= 32767 and new["AF"] == 9
-    assert abs(new["AG"] * 2.0 ** -new["AF"] / (-11012 * 2.0 ** -11) - 1 / 0.1621) < 0.01
+    assert list(new) == ["AG"] and new["AG"] == round(-11012 / 0.1621)      # fits the range: AF stays 11
     assert "16.2%" in sensor_warning(0.1621)
 
 
@@ -558,7 +557,9 @@ def test_af_stays_11_and_drops_to_10_only_when_ag_does_not_fit():
     from tune4164.advise import sensor_change
     keep = sensor_change({"AG": -12341, "AF": 11}, 1 / 1.5)                 # AG -18512 fits: AF stays 11
     assert [k for k, _, _ in keep.items()] == ["AG"] and keep.new == round(-12341 * 1.5)
-    ten = sensor_change({"AG": -20000, "AF": 11}, 1 / 2.0)                  # -40000 does not fit: AF 10
-    assert {k: n for k, _, n in ten.items()} == {"AG": -20000, "AF": 10}
+    ten = sensor_change({"AG": -200000, "AF": 11}, 1 / 2.0)                 # -400000 does not fit: AF 10
+    assert {k: n for k, _, n in ten.items()} == {"AG": -200000, "AF": 10}
+    now = sensor_change({"AG": -28787, "AF": 7}, 1 / 1.0)                   # X today: 230296 with AF 10
+    assert {k: n for k, _, n in now.items()} == {"AG": -230296, "AF": 10}
     back = sensor_change({"AG": -4000, "AF": 9}, 1 / 1.0)                   # fits with 11: back to the default
     assert {k: n for k, _, n in back.items()} == {"AG": -16000, "AF": 11}

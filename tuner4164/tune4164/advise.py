@@ -74,7 +74,7 @@ class Change:
         return int(round((self.factor - 1) * 100))
 
 
-AG_LIMIT = 32767          # AG is a 16-bit value
+AG_LIMIT = 300000         # the largest AG the controller takes (about 300000, per the user)
 AF_DEFAULT = 11           # AF stays 11; 10 only when AG would leave its range
 BIG_SENSOR_FIX = 0.25     # above this, AG is fixed together with an equivalent KP/KI/KD change
 
@@ -90,7 +90,7 @@ def sensor_warning(meas_gain: float) -> str:
 
 
 def sensor_change(gains: dict, meas_gain: float) -> Change | None:
-    """AG (and AF only when AG would leave its 16-bit range) so the sensor reads the encoder speed.
+    """AG (and AF only when AG would leave its range) so the sensor reads the encoder speed.
     Nothing else changes: the speed sensor is fixed first, on its own."""
     ag, af = gains.get("AG"), gains.get("AF")
     if ag is None:
