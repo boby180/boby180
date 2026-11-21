@@ -9,6 +9,12 @@ instant rename on the NAS and can be undone. Rules:
 * At least one copy of every photo always stays in place: if all copies are
   inside the ``--from`` folders, the best one is kept.
 * Every move is written to a log, which ``undo-dedupe`` uses to put files back.
+
+With ``--lower-resolution`` the same rules apply to *versions* of a photo
+(see :mod:`duplicates`, "similar" groups): the highest-resolution version
+stays, and only versions with clearly fewer pixels are moved - together with
+their identical copies. Versions with the same resolution (e.g. an edited
+copy) are never touched.
 """
 
 from __future__ import annotations
@@ -21,7 +27,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable, Iterable
 
-from .duplicates import EXACT, DuplicateGroup
+from .duplicates import EXACT, SIMILAR, DuplicateGroup
 from .scanner import ImageInfo
 
 REVIEW_DIR = "_duplicates_to_review"
@@ -94,6 +100,47 @@ def plan_moves(
             kept, removable = removable[0], removable[1:]  # never remove the last copy
         for img in removable:
             plans.append(MovePlan(img, review_target(img), kept))
+    return plans
+
+
+def _pixels(img: ImageInfo) -> int:
+    return (img.width or 0) * (img.height or 0)
+
+
+def plan_lower_resolution(
+    groups: list[DuplicateGroup],
+    all_images: list[ImageInfo],
+    remove_from: Iterable[str],
+    never_move: Iterable[str] = (),
+) -> list[MovePlan]:
+    """Plan moving lower-resolution versions of a photo out of ``remove_from``.
+
+    In each "similar" group the version with the most pixels is kept. Every
+    other version with at least 1% fewer pixels is moved, including all its
+    byte-identical copies. The kept version's own copies stay where they are.
+    """
+    folders = [_norm(f) for f in remove_from]
+    protected = [_norm(f) for f in never_move]
+    copies: dict[str, list[ImageInfo]] = {}
+    for img in all_images:
+        if img.sha256:
+            copies.setdefault(img.sha256, []).append(img)
+
+    plans = []
+    for group in groups:
+        if group.kind != SIMILAR:
+            continue
+        best = group.images[0]  # sorted best first: most pixels, then biggest file
+        best_pixels = _pixels(best)
+        if not best_pixels:
+            continue
+        for version in group.images[1:]:
+            pixels = _pixels(version)
+            if not pixels or pixels > 0.99 * best_pixels:
+                continue  # unknown size or same resolution: leave it alone
+            for img in copies.get(version.sha256, [version]):
+                if is_under(img.path, folders) and not is_under(img.path, protected):
+                    plans.append(MovePlan(img, review_target(img), best))
     return plans
 
 

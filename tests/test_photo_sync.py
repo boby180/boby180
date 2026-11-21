@@ -412,3 +412,36 @@ def test_plan_moves_keep_one_inside_and_never_move():
 
     # On a NAS share the review folder is at the top of the share, outside the Photos library.
     assert review_target(lib_b).replace("\\", "/") == "//NAS/home/_duplicates_to_review/Photos/my-olimpus/a.jpg"
+
+
+def test_dedupe_lower_resolution(tmp_path):
+    server = tmp_path / "nas"
+    big = make_photo(server / "photo" / "2019" / "dive.jpg", 70, size=(640, 480), taken="2019:05:05 10:00:00")
+    with Image.open(big) as img:
+        exif = img.getexif()
+        small = img.resize((160, 120))
+        (server / "google").mkdir(parents=True)
+        small.save(server / "google" / "dive.jpg", quality=70, exif=exif)
+        (server / "MobileBackup").mkdir()
+        small.save(server / "MobileBackup" / "dive.jpg", quality=70, exif=exif)   # phone backup: protected
+        # Same resolution, just re-saved (e.g. edited): must stay.
+        (server / "edited").mkdir()
+        img.save(server / "edited" / "dive.jpg", quality=80, exif=exif)
+    shutil.copy2(server / "google" / "dive.jpg", server / "photo" / "dive_small_copy.jpg")  # copy of the small one
+
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text(
+        f"local:\n  paths: ['{server.as_posix()}']\n"
+        f"server:\n  paths: ['{server.as_posix()}']\n  upload_path: '{(server / 'up').as_posix()}'\n",
+        encoding="utf-8",
+    )
+    args = ["-c", str(cfg), "dedupe", "--lower-resolution", "--except", (server / "MobileBackup").as_posix()]
+    assert main(args) == 0                                      # dry run
+    assert (server / "google" / "dive.jpg").exists()
+    assert main(args + ["--execute"]) == 0
+    assert not (server / "google" / "dive.jpg").exists()
+    assert not (server / "photo" / "dive_small_copy.jpg").exists()   # identical copy of the small version
+    assert (server / "photo" / "2019" / "dive.jpg").exists()        # highest resolution kept
+    assert (server / "edited" / "dive.jpg").exists()                # same resolution kept
+    assert (server / "MobileBackup" / "dive.jpg").exists()          # protected
+    assert (server / "_duplicates_to_review" / "google" / "dive.jpg").exists()

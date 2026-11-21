@@ -17,7 +17,9 @@ from .cache import ScanCache
 from .compare import EXACT, MISSING, SIMILAR, compare_images, summarize
 from .config import Config, ConfigError, load_config
 from .enhance import enhance_folder
-from .dedupe import REVIEW_DIR, execute_moves, is_under, new_log_path, plan_moves, undo_moves
+from .dedupe import (
+    REVIEW_DIR, execute_moves, is_under, new_log_path, plan_lower_resolution, plan_moves, undo_moves,
+)
 from .duplicates import EXACT as DUP_EXACT, find_duplicates, location, location_summary
 from .report import write_compare_report, write_enhance_report, write_duplicates_report, write_upload_report
 from .scanner import ImageInfo, imagehash, scan_folder
@@ -154,7 +156,8 @@ def cmd_duplicates(config: Config, args) -> int:
 def cmd_dedupe(config: Config, args) -> int:
     config.validate()
     server_roots = config.server_scan_paths()
-    for folder in args.from_folders:
+    from_folders = args.from_folders or server_roots  # default: every server folder in config.yaml
+    for folder in from_folders:
         if not Path(folder).is_dir():
             raise ConfigError(f"Folder not found: {folder}")
         if not is_under(folder, [p.replace("\\", "/").rstrip("/").casefold() for p in server_roots]):
@@ -162,9 +165,18 @@ def cmd_dedupe(config: Config, args) -> int:
 
     with ScanCache(config.output.cache_file) as cache:
         images = _scan(config, cache, server_roots, "server")
-    print("Looking for identical copies...")
-    groups = find_duplicates(images, include_similar=False)
-    plans = plan_moves(groups, args.from_folders, args.except_folders, args.keep_one_inside)
+    if args.lower_resolution:
+        print("Looking for lower-resolution versions of the same photo...")
+        groups = find_duplicates(
+            images, config.compare.similarity_threshold, include_similar=True, progress=_progress("comparing"),
+        )
+        plans = plan_lower_resolution(groups, images, from_folders, args.except_folders)
+        what = "Lower-resolution versions"
+    else:
+        print("Looking for identical copies...")
+        groups = find_duplicates(images, include_similar=False)
+        plans = plan_moves(groups, from_folders, args.except_folders, args.keep_one_inside)
+        what = "Identical copies"
 
     by_location: dict[str, list[int]] = {}
     for p in plans:
@@ -172,14 +184,17 @@ def cmd_dedupe(config: Config, args) -> int:
         entry[0] += 1
         entry[1] += p.source.size
     total_mb = sum(p.source.size for p in plans) / 1024 / 1024
-    print(f"\nIdentical copies to move out of the chosen folders: {len(plans)} files, {total_mb:.0f} MB")
+    print(f"\n{what} to move out of the chosen folders: {len(plans)} files, {total_mb:.0f} MB")
     for loc, (count, size) in sorted(by_location.items(), key=lambda kv: -kv[1][1]):
         print(f"  {size / 1024 / 1024:8.0f} MB  {count:6} files  from: {loc}")
     print(f"Each one stays available elsewhere; moved files go to '{REVIEW_DIR}' at the top of the same shared folder.")
 
     if not args.execute:
         for p in plans[:10]:
-            print(f"  [dry-run] {p.source.path}\n            copy kept: {p.kept.path}")
+            sizes = ""
+            if args.lower_resolution:
+                sizes = f"  ({p.source.width}x{p.source.height} -> kept {p.kept.width}x{p.kept.height})"
+            print(f"  [dry-run] {p.source.path}{sizes}\n            copy kept: {p.kept.path}")
         if plans:
             print("\nThis was a dry run - nothing was moved. Add --execute to move the files.")
         return 0
@@ -241,8 +256,12 @@ def main(argv: list[str] | None = None) -> int:
     dup.add_argument("--where", choices=["server", "computer", "all"], default="server",
                      help="where to look for duplicates (default: server)")
     ded = sub.add_parser("dedupe", help="move identical copies out of chosen server folders (dry run by default)")
-    ded.add_argument("--from", dest="from_folders", action="append", required=True, metavar="FOLDER",
-                     help="server folder to remove copies from (repeatable); a copy always stays elsewhere")
+    ded.add_argument("--from", dest="from_folders", action="append", default=[], metavar="FOLDER",
+                     help="server folder to remove copies from (repeatable; default: all server folders); "
+                          "a copy always stays")
+    ded.add_argument("--lower-resolution", action="store_true",
+                     help="move lower-resolution versions of a photo instead of identical copies; "
+                          "the highest-resolution version stays")
     ded.add_argument("--except", dest="except_folders", action="append", default=[], metavar="FOLDER",
                      help="never move files from this folder, e.g. the phone backup (repeatable)")
     ded.add_argument("--keep-one-inside", action="store_true",

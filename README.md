@@ -117,6 +117,18 @@ python -m photo_sync undo-dedupe "reports/dedupe-....csv"                 # לה
 python -m photo_sync dedupe --from "//NAS/home/Photos" --except "//NAS/home/Photos/MobileBackup" --keep-one-inside
 ```
 
+### ניקוי גרסאות ברזולוציה נמוכה
+
+```bash
+python -m photo_sync dedupe --lower-resolution --except "//NAS/home/Photos/MobileBackup"             # הרצת ניסיון
+python -m photo_sync dedupe --lower-resolution --except "//NAS/home/Photos/MobileBackup" --execute   # העברה בפועל
+```
+
+* בכל קבוצה של "אותה תמונה בגרסאות שונות" נשארת הגרסה עם הכי הרבה פיקסלים.
+* מועברות רק גרסאות עם רזולוציה נמוכה יותר (וגם העותקים הזהים שלהן). גרסה באותה רזולוציה (למשל ערוכה) לא נוגעים בה.
+* בלי `--from` הניקוי חל על כל תיקיות השרת שב-`config.yaml`.
+* כמו תמיד: הקבצים מועברים ל-`_duplicates_to_review`, ו-`undo-dedupe` מחזיר אותם.
+
 ## שיפור תמונות תת-ימיות
 
 ```bash
