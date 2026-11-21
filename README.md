@@ -129,6 +129,23 @@ python -m photo_sync dedupe --lower-resolution --except "//NAS/home/Photos/Mobil
 * בלי `--from` הניקוי חל על כל תיקיות השרת שב-`config.yaml`.
 * כמו תמיד: הקבצים מועברים ל-`_duplicates_to_review`, ו-`undo-dedupe` מחזיר אותם.
 
+## סידור לפי שנים וחודשים (כמו Google Photos)
+
+```bash
+python -m photo_sync organize --from "//NAS/photo" --to "//NAS/photo/by-date"             # הרצת ניסיון
+python -m photo_sync organize --from "//NAS/photo" --to "//NAS/photo/by-date" --execute   # העברה בפועל
+```
+
+המבנה שנוצר: `by-date/2019/2019-05/IMG_1234.jpg`. התאריך נלקח מהתמונה עצמה, לא מתאריך הקובץ (שמשתנה בהעתקה):
+
+1. **תאריך הצילום מהמצלמה** (EXIF).
+2. **תאריך בשם הקובץ**, למשל `IMG_20180731_182308.jpg` (טלפונים, וואטסאפ).
+3. **שנה/חודש בשם התיקייה**, למשל `03-2020` או `2001 אילת` - נפוץ בסריקות ישנות.
+4. בלי תאריך אמין - התמונה עוברת ל-`unknown-date/<שם התיקייה שלה>`, במקום לנחש.
+
+* שני קבצים שונים באותו שם מקבלים מספר (`a (1).jpg`). עותק זהה לגמרי עובר ל-`_duplicates_to_review`.
+* `--except` מגן על תיקיות (למשל גיבוי הטלפון). כל העברה נרשמת בלוג, ו-`undo-dedupe <log>` מחזיר הכול.
+
 ## שיפור תמונות תת-ימיות
 
 ```bash

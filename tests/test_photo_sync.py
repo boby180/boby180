@@ -445,3 +445,60 @@ def test_dedupe_lower_resolution(tmp_path):
     assert (server / "edited" / "dive.jpg").exists()                # same resolution kept
     assert (server / "MobileBackup" / "dive.jpg").exists()          # protected
     assert (server / "_duplicates_to_review" / "google" / "dive.jpg").exists()
+
+
+def test_photo_date_sources():
+    from photo_sync.organize import photo_date
+    from photo_sync.scanner import ImageInfo
+
+    def img(rel, taken=None):
+        return ImageInfo(path="/x/" + rel, rel_path=rel, root="/x", name=rel.rsplit("/", 1)[-1],
+                         size=1, mtime=0, taken=taken)
+
+    assert photo_date(img("a/b.jpg", "2019-05-05 10:00:00")) == (2019, 5, "exif")
+    assert photo_date(img("misc/IMG_20180731_182308.jpg")) == (2018, 7, "filename")
+    assert photo_date(img("misc/IMG-20190505-WA0001.jpg")) == (2019, 5, "filename")
+    assert photo_date(img("03-2020/scan1.jpg")) == (2020, 3, "folder")
+    assert photo_date(img("2001 אילת/dive/scan2.jpg")) == (2001, None, "folder")
+    assert photo_date(img("misc/P81.tif")) is None
+    assert photo_date(img("misc/a.jpg", "0000-00-00 00:00:00")) is None
+
+
+def test_organize_by_year_and_month(tmp_path):
+    server = tmp_path / "nas" / "photo"
+    a = make_photo(server / "events" / "trip" / "a.jpg", 80, taken="2019:05:05 10:00:00")
+    make_photo(server / "phone" / "IMG_20180731_182308.jpg", 81)
+    make_photo(server / "03-2020" / "scan.jpg", 82)
+    make_photo(server / "misc" / "nodate.jpg", 83)
+    (server / "copy").mkdir()
+    shutil.copy2(a, server / "copy" / "a.jpg")                              # identical copy
+    make_photo(server / "other" / "a.jpg", 84, taken="2019:05:20 10:00:00")  # same name, other photo
+    phone = make_photo(server / "MobileBackup" / "p.jpg", 85, taken="2021:01:01 10:00:00")
+
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text(
+        f"local:\n  paths: ['{server.as_posix()}']\n"
+        f"server:\n  paths: ['{server.as_posix()}']\n  upload_path: '{(server / 'up').as_posix()}'\n",
+        encoding="utf-8",
+    )
+    to = (server / "by-date").as_posix()
+    args = ["-c", str(cfg), "organize", "--from", server.as_posix(), "--to", to,
+            "--except", (server / "MobileBackup").as_posix()]
+    assert main(args) == 0
+    assert (server / "events" / "trip" / "a.jpg").exists()               # dry run moved nothing
+
+    assert main(args + ["--execute"]) == 0
+    d = server / "by-date"
+    assert (d / "2019" / "2019-05" / "a.jpg").exists()
+    assert (d / "2019" / "2019-05" / "a (1).jpg").exists()                # different photo, same name
+    assert (d / "2018" / "2018-07" / "IMG_20180731_182308.jpg").exists()
+    assert (d / "2020" / "2020-03" / "scan.jpg").exists()
+    assert (d / "unknown-date" / "misc" / "nodate.jpg").exists()
+    assert phone.exists()                                                  # protected
+    assert not (server / "copy" / "a.jpg").exists()
+    assert len(list((server / "_duplicates_to_review").rglob("a.jpg"))) == 1  # the identical copy
+
+    (log,) = (tmp_path / "reports").glob("dedupe-*.csv")
+    assert main(["-c", str(cfg), "undo-dedupe", str(log)]) == 0
+    assert (server / "events" / "trip" / "a.jpg").exists()
+    assert (server / "copy" / "a.jpg").exists()

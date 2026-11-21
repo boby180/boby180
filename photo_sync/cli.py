@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 import warnings
 from pathlib import Path
@@ -17,6 +18,7 @@ from .cache import ScanCache
 from .compare import EXACT, MISSING, SIMILAR, compare_images, summarize
 from .config import Config, ConfigError, load_config
 from .enhance import enhance_folder
+from .organize import UNKNOWN_DIR, plan_organize
 from .dedupe import (
     REVIEW_DIR, execute_moves, is_under, new_log_path, plan_lower_resolution, plan_moves, undo_moves,
 )
@@ -207,6 +209,58 @@ def cmd_dedupe(config: Config, args) -> int:
     return 1 if counts.get("failed") else 0
 
 
+def cmd_organize(config: Config, args) -> int:
+    config.validate()
+    server_roots = config.server_scan_paths()
+    roots_norm = [p.replace("\\", "/").rstrip("/").casefold() for p in server_roots]
+    for folder in [*args.from_folders, args.to]:
+        if not is_under(folder, roots_norm):
+            raise ConfigError(f"{folder} is not inside one of the server folders in config.yaml")
+    for folder in args.from_folders:
+        if not Path(folder).is_dir():
+            raise ConfigError(f"Folder not found: {folder}")
+
+    with ScanCache(config.output.cache_file) as cache:
+        images = _scan(config, cache, server_roots, "server")
+    plans, sources = plan_organize(images, args.from_folders, args.to, args.except_folders)
+
+    by_source: dict[str, int] = {}
+    for s in sources.values():
+        by_source[s] = by_source.get(s, 0) + 1
+    labels = {
+        "exif": "date taken from the camera (EXIF)",
+        "filename": "date in the file name",
+        "folder": "year/month in the folder name",
+        "none": f"no reliable date -> {UNKNOWN_DIR}",
+        "duplicate": f"identical copy already at the target -> {REVIEW_DIR}",
+    }
+    print(f"\nPhotos to arrange into {args.to}: {len(plans)}")
+    for key in ("exif", "filename", "folder", "none", "duplicate"):
+        if by_source.get(key):
+            print(f"  {by_source[key]:7}  {labels[key]}")
+    years: dict[str, int] = {}
+    for p in plans:
+        rel = os.path.relpath(p.target, args.to).replace("\\", "/").split("/")[0]
+        if not rel.startswith(".."):
+            years[rel] = years.get(rel, 0) + 1
+    if years:
+        print("  per year: " + ", ".join(f"{y}: {n}" for y, n in sorted(years.items())))
+
+    if not args.execute:
+        for p in plans[:12]:
+            print(f"  [dry-run] {p.source.path}\n         -> {p.target}   ({sources.get(p.source.path)})")
+        if plans:
+            print("\nThis was a dry run - nothing was moved. Add --execute to move the files.")
+        return 0
+
+    log_path = new_log_path(config.output.report_dir)
+    counts = execute_moves(plans, log_path)
+    print("\nSummary:", ", ".join(f"{k}={v}" for k, v in counts.items()) or "nothing to move")
+    print(f"Log (needed for undo): {log_path}")
+    print(f'To put everything back:  python -m photo_sync undo-dedupe "{log_path}"')
+    return 1 if counts.get("failed") else 0
+
+
 def cmd_undo_dedupe(config: Config, args) -> int:
     log_csv = Path(args.log)
     if not log_csv.is_file():
@@ -267,7 +321,14 @@ def main(argv: list[str] | None = None) -> int:
     ded.add_argument("--keep-one-inside", action="store_true",
                      help="keep one copy inside the --from folders even if other copies exist elsewhere")
     ded.add_argument("--execute", action="store_true", help="really move the files (default is a dry run)")
-    und = sub.add_parser("undo-dedupe", help="put back files moved by dedupe, using its log")
+    org = sub.add_parser("organize", help="arrange photos into year/month folders by date taken (dry run by default)")
+    org.add_argument("--from", dest="from_folders", action="append", required=True, metavar="FOLDER",
+                     help="server folder whose photos are arranged (repeatable)")
+    org.add_argument("--to", required=True, help="server folder that receives <year>/<year-month>/ folders")
+    org.add_argument("--except", dest="except_folders", action="append", default=[], metavar="FOLDER",
+                     help="never move files from this folder, e.g. the phone backup (repeatable)")
+    org.add_argument("--execute", action="store_true", help="really move the files (default is a dry run)")
+    und = sub.add_parser("undo-dedupe", help="put back files moved by dedupe or organize, using its log")
     und.add_argument("log", help="the dedupe-....csv log file from the reports folder")
     enh = sub.add_parser("enhance", help="colour-correct underwater photos into a separate folder")
     enh.add_argument("source", help="folder with the photos to enhance")
@@ -281,7 +342,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     handlers = {"check": cmd_check, "compare": cmd_compare, "upload": cmd_upload, "duplicates": cmd_duplicates, "enhance": cmd_enhance,
-                "dedupe": cmd_dedupe, "undo-dedupe": cmd_undo_dedupe}
+                "dedupe": cmd_dedupe, "undo-dedupe": cmd_undo_dedupe, "organize": cmd_organize}
     try:
         config = load_config(args.config)
         return handlers[args.command](config, args)
