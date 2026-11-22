@@ -15,6 +15,7 @@ import pyqtgraph as pg
 from PySide6.QtCore import QSettings, QStandardPaths, Qt
 from PySide6.QtGui import QColor, QPalette
 from PySide6.QtWidgets import (
+    QLineEdit, QListWidget, QListWidgetItem,
     QApplication, QCheckBox, QComboBox, QFileDialog, QFormLayout, QGroupBox, QHBoxLayout, QHeaderView, QLabel,
     QDialog, QDialogButtonBox, QFrame, QInputDialog, QScrollArea, QMainWindow, QMessageBox, QPushButton, QTabWidget, QSpinBox, QSplitter, QTableWidget, QTableWidgetItem, QTextBrowser, QVBoxLayout,
     QWidget,
@@ -22,6 +23,7 @@ from PySide6.QtWidgets import (
 
 from .advise import SET_NAMES, TESTS, Advice, advise
 from .loopguard import best_run, guard
+from . import help as helpkb
 from .history import (History, advice_fields, compare, extract_run, fingerprint, load_run, make_entry, other_unit,
                       run_document, step_back)
 from .analysis import Analysis, command_metrics, move_metrics, moving_from_velocity, step_metrics, tacho_metrics
@@ -191,8 +193,12 @@ class MainWindow(QMainWindow):
         self.table.setHorizontalHeaderLabels(TUNING_KEYS + ["מבנה"])
         for c, key in enumerate(TUNING_KEYS):
             m = re.search(r"\[(\d)\]$", key)
+            base = key[:2] if key[:2] in ("KP", "KI", "KD") else key
+            tip = helpkb.HEADER_TIPS.get(base, "")
             if key[:2] in ("KP", "KI", "KD") and m:
-                self.table.horizontalHeaderItem(c).setToolTip(SET_NAMES[int(m.group(1))])
+                tip = f"{SET_NAMES[int(m.group(1))]}. {tip}"
+            if tip:
+                self.table.horizontalHeaderItem(c).setToolTip(tip)
         self.table.setVerticalHeaderLabels(list(AXES))
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
         self.table.setLayoutDirection(Qt.LeftToRight)
@@ -355,6 +361,7 @@ class MainWindow(QMainWindow):
         hrow.addStretch(1)
         hl.addLayout(hrow)
         self.tabs.addTab(hist, "היסטוריית כיול")
+        self.tabs.addTab(self._help_tab(), "עזרה")
         lay.addWidget(self.tabs, 3)
         res = QGroupBox("ממצאים והמלצה")
         rl = QVBoxLayout(res)
@@ -366,8 +373,11 @@ class MainWindow(QMainWindow):
         self.copy_btn.clicked.connect(self.copy_command)
         self.save_btn = QPushButton("שמור PRM עם השינוי...")
         self.save_btn.clicked.connect(self.save_prm)
+        self.explain_btn = QPushButton("הסבר את ההמלצה")
+        self.explain_btn.clicked.connect(self.explain_advice)
         self.prev_btn = QPushButton("השוואה גרפית להקלטה הקודמת")
         self.prev_btn.clicked.connect(self.compare_with_previous)
+        row.addWidget(self.explain_btn)
         for b in (self.copy_btn, self.save_btn, self.prev_btn):
             b.setEnabled(False)
             row.addWidget(b)
@@ -582,6 +592,78 @@ class MainWindow(QMainWindow):
                                            "שמורה עם ה-PRM שהיה בזמן שלה.")
         self._plot(t, ref, act, pe, cmd, test, vel, tacho)
         self._show_advice()
+
+    # ---- offline help ----
+    def _help_tab(self) -> QWidget:
+        w = QWidget()
+        lay = QVBoxLayout(w)
+        top = QHBoxLayout()
+        self.help_q = QLineEdit()
+        self.help_q.setPlaceholderText("כתוב שאלה, למשל: למה זה רועד בזמן נסיעה? / מה זה TR? / איך מאפסים את האופסט?")
+        self.help_q.returnPressed.connect(self._help_search)
+        self.help_q.textChanged.connect(self._help_search)
+        ask = QPushButton("חפש")
+        ask.clicked.connect(self._help_search)
+        why = QPushButton("הסבר את ההמלצה הנוכחית")
+        why.clicked.connect(self.explain_advice)
+        for x, stretch in ((self.help_q, 1), (ask, 0), (why, 0)):
+            top.addWidget(x, stretch)
+        lay.addLayout(top)
+        body = QSplitter(Qt.Horizontal)
+        self.help_list = QListWidget()
+        self.help_list.currentItemChanged.connect(self._help_show)
+        self.help_text = QTextBrowser()
+        body.addWidget(self.help_list)
+        body.addWidget(self.help_text)
+        body.setSizes([260, 640])
+        lay.addWidget(body, 1)
+        note = QLabel("העזרה עובדת בלי אינטרנט: היא מחפשת בהסברים שבתוך התוכנה ובניתוח הנוכחי.")
+        note.setStyleSheet("color:#5d6b7a;")
+        lay.addWidget(note)
+        self._help_fill(helpkb.TOPICS, grouped=True)
+        return w
+
+    def _help_fill(self, topics, grouped: bool = False) -> None:
+        self.help_list.blockSignals(True)
+        self.help_list.clear()
+        group = None
+        for t in topics:
+            if grouped and t.group != group:
+                group = t.group
+                head = QListWidgetItem(f"— {group} —")
+                head.setFlags(Qt.NoItemFlags)
+                head.setForeground(QColor("#1f6fb3"))
+                self.help_list.addItem(head)
+            item = QListWidgetItem(t.title)
+            item.setData(Qt.UserRole, t.id)
+            self.help_list.addItem(item)
+        self.help_list.blockSignals(False)
+        first = next((i for i in range(self.help_list.count()) if self.help_list.item(i).data(Qt.UserRole)), None)
+        if first is not None and not grouped:
+            self.help_list.setCurrentRow(first)
+
+    def _help_search(self) -> None:
+        q = self.help_q.text().strip()
+        if not q:
+            self._help_fill(helpkb.TOPICS, grouped=True)
+            return
+        found = helpkb.search(q)
+        if found:
+            self._help_fill(found)
+        else:
+            self._help_fill(helpkb.TOPICS, grouped=True)
+            self.help_text.setHtml("<p>לא מצאתי תשובה לשאלה הזו. נסה מילים אחרות (למשל שם פרמטר: KP, AG, TR), "
+                                   "או בחר נושא מהרשימה.</p>")
+
+    def _help_show(self, item, _prev=None) -> None:
+        tid = item.data(Qt.UserRole) if item else None
+        t = helpkb.topic(tid) if tid else None
+        if t:
+            self.help_text.setHtml(f"<h2>{html.escape(t.title)}</h2>{t.text}")
+
+    def explain_advice(self) -> None:
+        self.help_text.setHtml(helpkb.explain(self.advice, axis=self.axis.currentText()))
+        self.tabs.setCurrentIndex(self.tabs.count() - 1)
 
     # ---- calibration memory ----
     def _rec_key(self) -> str:

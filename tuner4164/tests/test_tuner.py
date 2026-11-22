@@ -652,3 +652,25 @@ def test_error_outside_tr_is_still_fixed():
     adv = Advice()
     _move_advice(mv, adv, lambda p, sets, f, why: adv.changes.append(gain_change({"KI[2]": 20, "KI[3]": 20}, p, sets, f, why)))
     assert adv.primary.param == "KI[2]"
+
+
+def test_offline_help_finds_the_right_topic():
+    from tune4164.help import TOPICS, search
+    assert len({t.id for t in TOPICS}) == len(TOPICS)
+    cases = {"למה זה רועד בזמן נסיעה": "vibration", "מה זה TR": "tr", "איך מאפסים את האופסט": "tacho_offset",
+             "מה ההבדל בין KI[2] ל-KI[3]": "sets", "הטאכו לא מסומן": "tacho_mode", "הציר נתקע ליד המטרה": "friction",
+             "איך לדעת אם הרעידה מכנית": "mechanical", "הוא מחזיר אותי לערכים שהיו": "loop",
+             "איך שומרים בבקר": "save", "זמזום בפקודה": "noise", "מסובב חדש": "rotators", "AG": "tacho_gain"}
+    for q, tid in cases.items():
+        assert search(q)[0].id == tid, q
+    assert search("xyzzy") == []
+
+
+def test_explain_tells_the_stage_and_what_to_expect():
+    from tune4164.analysis import TachoMetrics
+    from tune4164.help import explain
+    tm = TachoMetrics(gain=0.16, correlation=0.9997, residual_pct=2, still_offset=None, offset_manual=True, ok=True)
+    adv = advise("PIV", "full", {**FULL_GAINS, "CG": 28739, "AS": 2029, "AG": -11012, "AF": 11}, Analysis(tacho=tm))
+    text = explain(adv, axis="X")
+    assert "שלב 1" in text and "XAG" in text and "מה לצפות בהקלטה הבאה" in text
+    assert "עדיין אין ניתוח" in explain(None)
