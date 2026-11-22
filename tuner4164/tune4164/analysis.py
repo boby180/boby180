@@ -40,6 +40,8 @@ class MoveMetrics:
     settle_after_end: float | None = None
     final_error: float = 0.0             # PE at the end of the standstill
     tolerance: float = 0.0
+    in_target: float | None = None       # TR of the controller: |PE| inside it counts as "in target"
+    settle_tr: float | None = None       # stop -> |PE| inside TR for good [s]
     sustained: bool = False              # still oscillating at the end of the standstill
     stick: bool = False                  # friction: stuck while the command ramps, then breaks free
     stuck_error: float = 0.0             # PE while stuck [counts]
@@ -229,7 +231,8 @@ def _stick_slip(m: "MoveMetrics", t: np.ndarray, pe: np.ndarray, pos: np.ndarray
 
 def move_metrics(t: np.ndarray, pe: np.ndarray, moving: np.ndarray | None = None,
                  tolerance: float | None = None, vref: np.ndarray | None = None,
-                 pos: np.ndarray | None = None, cmd: np.ndarray | None = None) -> MoveMetrics:
+                 pos: np.ndarray | None = None, cmd: np.ndarray | None = None,
+                 tr: float | None = None) -> MoveMetrics:
     """Point-to-point motion judged from the position error.
 
     'moving' marks samples where the desired position changes (from the desired position or
@@ -288,6 +291,13 @@ def move_metrics(t: np.ndarray, pe: np.ndarray, moving: np.ndarray | None = None
         m.settle_after_end = 0.0
     elif outside[-1] < len(after) - tail:
         m.settle_after_end = float(after_t[outside[-1] + 1])
+    if tr:
+        m.in_target = float(tr)
+        out_tr = np.flatnonzero(np.abs(after) > tr)
+        if len(out_tr) == 0:
+            m.settle_tr = 0.0
+        elif out_tr[-1] < len(after) - tail:
+            m.settle_tr = float(after_t[out_tr[-1] + 1])
     cr = _crossings(after_t, after, m.final_error, tol / 2)
     m.oscillations = len(cr)
     if len(cr) >= 3:

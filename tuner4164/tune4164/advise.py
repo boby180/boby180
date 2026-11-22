@@ -249,6 +249,7 @@ def advise(mode: str, test: str, gains: dict[str, int | None], an: Analysis) -> 
 
 
 VIB_COUNTS = 20      # ripple amplitude (counts) while cruising that counts as vibration
+SETTLE_OK = 0.3      # s: inside TR this fast after the stop is fine
 NOISY_CMD = 0.5      # driver-command jitter that counts as very noisy
 
 
@@ -280,11 +281,28 @@ def _move_advice(mv, adv: Advice, add, cmd=None) -> None:
         return
     adv.findings.append(
         f"אחרי העצירה ב-{mv.stop_time:.2f}s: שיא שגיאה {mv.end_error_peak:.0f}, "
-        + (f"התייצבות תוך {mv.settle_after_end * 1000:.0f}ms" if mv.settle_after_end is not None else "לא התייצב")
-        + f", שגיאה סופית {mv.final_error:.0f} (סף {mv.tolerance:.0f})"
+        + ((f"בתוך TR תוך {mv.settle_tr * 1000:.0f}ms" if mv.settle_tr is not None else "לא נשאר בתוך TR")
+           if mv.in_target else
+           (f"התייצבות תוך {mv.settle_after_end * 1000:.0f}ms" if mv.settle_after_end is not None else "לא התייצב"))
+        + f", שגיאה סופית {mv.final_error:.0f} "
+        + (f"(TR={mv.in_target:.0f})" if mv.in_target else f"(סף {mv.tolerance:.0f})")
         + (f", תנודה {mv.residual_freq:.1f}Hz" if mv.residual_freq else ""))
     stop_note = " משנים רק את [2] ו-[3] (אחרי סוף התנועה ובעמידה). [1] בזמן תנועה נשאר כמו שהוא."
-    if mv.stick:
+    tr = mv.in_target
+    if tr:
+        if mv.end_error_peak <= tr:
+            adv.findings.append(f"✔ אחרי העצירה השגיאה (שיא {mv.end_error_peak:.0f}) נשארת בתוך TR=±{tr:.0f}: תקין, "
+                                "לא משנים כלום בשלב העצירה.")
+            return
+        if mv.settle_tr is not None and mv.settle_tr <= SETTLE_OK:
+            adv.findings.append(f"✔ אחרי העצירה הציר נכנס ל-TR=±{tr:.0f} תוך {mv.settle_tr * 1000:.0f}ms ונשאר בו: "
+                                "תקין, לא משנים כלום בשלב העצירה.")
+            return
+        if mv.settle_tr is not None:
+            adv.findings.append(f"הציר נכנס ל-TR=±{tr:.0f} רק אחרי {mv.settle_tr * 1000:.0f}ms.")
+        else:
+            adv.findings.append(f"✘ אחרי העצירה הציר לא נשאר בתוך TR=±{tr:.0f} עד סוף העמידה.")
+    if mv.stick and not (tr and abs(mv.stuck_error) <= tr):
         free = (f"עד שהציר השתחרר אחרי {mv.stuck_time:.1f} שניות" if mv.stuck_time is not None
                 else "והציר לא השתחרר עד סוף העמידה")
         adv.findings.append(f"חיכוך (stick-slip): אחרי העצירה הציר נתקע בשגיאה של \u200e{mv.stuck_error:.0f}\u200e ספירות. "
@@ -299,7 +317,8 @@ def _move_advice(mv, adv: Advice, add, cmd=None) -> None:
                                  "המטרה, זה סימן שהגזמנו וחוזרים חצי דרך." + stop_note)
         return
     slow = mv.residual_freq is not None and mv.residual_freq < 1.0
-    wobbles = mv.sustained or mv.oscillations >= 3
+    wobbles = (mv.sustained or mv.oscillations >= 3) and not (tr and mv.settle_tr is not None)  # inside TR: fine
+    settle = mv.settle_tr if tr else mv.settle_after_end
     if wobbles and slow:
         add("KI", STOP, 0.7, f"נדנוד איטי אחרי העצירה ({mv.residual_freq:.2f}Hz, מחזור של כ-"
                              f"{1 / mv.residual_freq:.0f} שניות). תנודה איטית כזו נגרמת בדרך כלל מהאינטגרל (KI) "
@@ -309,10 +328,10 @@ def _move_advice(mv, adv: Advice, add, cmd=None) -> None:
         add("KP", STOP, 0.7, "הציר ממשיך להתנדנד עד סוף העמידה. מתחילים בהורדת KP." + stop_note)
     elif wobbles:
         add("KP", STOP, 0.8, "יש תנודה אחרי העצירה: KP גבוה מדי (לולאת מיקום מהירה מדי)." + stop_note)
-    elif mv.settle_after_end is not None and mv.settle_after_end > 0.3:
-        add("KP", STOP, 1.2, f"הציר מתייצב לאט ({mv.settle_after_end * 1000:.0f}ms) ובלי תנודה: יש מקום להעלות KP."
-                             + stop_note)
-    if abs(mv.final_error) > 2 * mv.tolerance and not (wobbles and slow):
+    elif settle is not None and settle > SETTLE_OK:
+        add("KP", STOP, 1.2, f"הציר מתייצב לאט ({settle * 1000:.0f}ms" + (f" עד שהוא בתוך TR" if tr else "")
+                             + ") ובלי תנודה: יש מקום להעלות KP." + stop_note)
+    if abs(mv.final_error) > (tr if tr else 2 * mv.tolerance) and not (wobbles and slow):
         add("KI", STOP, 1.25, f"נשארת שגיאת מיקום של {mv.final_error:.0f} ספירות בעמידה: מעלים KI." + stop_note)
 
 

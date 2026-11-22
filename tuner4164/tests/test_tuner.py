@@ -634,3 +634,21 @@ def test_tacho_mode_on_goes_on_to_the_sensor():
 def test_pid_axis_needs_no_tacho_mode():
     from tune4164.advise import Advice, tacho_mode_off
     assert tacho_mode_off("PID", {"CG": 8}, Advice()) is False
+
+
+def test_error_inside_tr_after_the_stop_needs_no_change():
+    from tune4164.advise import Advice, _move_advice, gain_change
+    t, pe, moving, pos, cmd = _friction_move()                 # stuck 37 counts from the target
+    mv = move_metrics(t, pe, moving, pos=pos, cmd=cmd, tr=100)
+    adv = Advice()
+    _move_advice(mv, adv, lambda p, sets, f, why: adv.changes.append(gain_change({}, p, sets, f, why)))
+    assert adv.changes == [] and any("TR=±100" in f and "תקין" in f for f in adv.findings)
+
+
+def test_error_outside_tr_is_still_fixed():
+    from tune4164.advise import Advice, _move_advice, gain_change
+    t, pe, moving, pos, cmd = _friction_move()
+    mv = move_metrics(t, pe, moving, pos=pos, cmd=cmd, tr=20)  # TR smaller than the stuck error
+    adv = Advice()
+    _move_advice(mv, adv, lambda p, sets, f, why: adv.changes.append(gain_change({"KI[2]": 20, "KI[3]": 20}, p, sets, f, why)))
+    assert adv.primary.param == "KI[2]"

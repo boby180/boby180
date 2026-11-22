@@ -548,7 +548,7 @@ class MainWindow(QMainWindow):
                 an.warnings.append("אין בהקלטה מיקום רצוי: זמני התנועה והעצירה זוהו לפי מהירות הציר בפועל. "
                                    "עדיף להוסיף להקלטה את Desired Position.")
             if pe is not None:
-                an.move = move_metrics(t, pe, moving, vref=vref, pos=act, cmd=cmd)
+                an.move = move_metrics(t, pe, moving, vref=vref, pos=act, cmd=cmd, tr=gains.get("TR"))
         if test == "full" and vel is not None and tacho is not None:
             an.tacho = tacho_metrics(vel, tacho, t=t)
         if test == "tacho":

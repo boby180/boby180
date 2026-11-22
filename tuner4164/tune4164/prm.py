@@ -16,7 +16,7 @@ from pathlib import Path
 AXES = "XYZW"
 # KP/KI/KD have three sets: [1] in motion, [2] after motion (until in target), [3] standing still.
 GAIN_SETS = (1, 2, 3)
-TUNING_KEYS = [f"{k}[{i}]" for k in ("KP", "KI", "KD") for i in GAIN_SETS] + ["IS", "ER", "TL", "FF[1]", "FF[2]", "AS", "AG", "AF", "CG"]
+TUNING_KEYS = [f"{k}[{i}]" for k in ("KP", "KI", "KD") for i in GAIN_SETS] + ["IS", "ER", "TR", "TL", "FF[1]", "FF[2]", "AS", "AG", "AF", "CG"]
 # CG bit 3 (zero based) selects the control scheme (Users Manual chapter 6); set = PID, clear = PIV.
 CG_PID_BIT = 3
 # CG bit 6 = "Use Analog Input (AI) as Velocity Feedback (Tacho Mode)". Not in the manual's text: the SC-Shell
