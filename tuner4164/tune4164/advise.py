@@ -135,6 +135,7 @@ class Advice:
     findings: list[str] = field(default_factory=list)
     changes: list[Change] = field(default_factory=list)   # first one = do this now
     warnings: list[str] = field(default_factory=list)
+    meets_spec: bool = False           # every error is inside the allowed window: calibration is done
 
     @property
     def primary(self) -> Change | None:
@@ -258,10 +259,20 @@ def _move_advice(mv, adv: Advice, add, cmd=None) -> None:
     if fol:
         adv.findings.append(f"פיגור בזמן נסיעה במהירות קבועה: {max(fol):.0f} ספירות"
                             + (f", אדוות ±{mv.cruise_ripple:.0f}" if mv.cruise_ripple is not None else ""))
-    # vibration while moving comes first: nothing else can be judged while the axis shakes
+    win = mv.in_target
+    wname = "" if not win else (f"TR=±{win:.0f}" if mv.window_from_tr else f"החלון המותר ±{win:.0f}")
     noisy = cmd is not None and cmd.ok and cmd.noise_ratio > NOISY_CMD
-    shaking = mv.vib_amp > max(VIB_COUNTS, 2 * mv.tolerance)
-    if shaking or noisy:
+    # inside the allowed window while moving: nothing to calibrate there, whatever the ripple looks like
+    motion_ok = bool(win) and (mv.cruise_peak is None or mv.cruise_peak <= win)
+    if win and mv.cruise_peak is not None:
+        adv.findings.append(("✔ " if motion_ok else "✘ ") + f"בזמן נסיעה השגיאה מגיעה עד ±{mv.cruise_peak:.0f} "
+                            + ("בתוך " if motion_ok else "מחוץ ל") + wname + ".")
+    shaking = mv.vib_amp > max(VIB_COUNTS, 2 * mv.tolerance) and not motion_ok
+    if noisy and motion_ok:
+        adv.findings.append(f"פקודת הדרייבר רועשת (רעש {cmd.noise_ratio:.2f}). השגיאה בתוך החלון, ולכן לא משנים בגלל זה; "
+                            "אם יש זמזום או שהמנוע מתחמם, שקול להוריד KD או מסנן מסדר 2.")
+    # vibration while moving comes first: nothing else can be judged while the axis shakes
+    if shaking or (noisy and not motion_ok):
         what = (f"רעידות בזמן הנסיעה: שגיאת המיקום רועדת ±{mv.vib_amp:.0f} ספירות"
                 + (f" בתדר של כ-{mv.vib_freq:.1f}Hz" if mv.vib_freq else "") if shaking else "")
         if noisy:
@@ -277,6 +288,10 @@ def _move_advice(mv, adv: Advice, add, cmd=None) -> None:
                                  "ובודקים אם התדר שלה משתנה עם המהירות.")
         return
     if not mv.has_stop:
+        if motion_ok:
+            adv.meets_spec = True
+            adv.findings.append(f"✔ עומד בדרישות בזמן נסיעה ({wname}). אין עצירה בהקלטה לבדיקה.")
+    if not mv.has_stop:
         adv.findings.append(mv.note)
         return
     adv.findings.append(
@@ -290,18 +305,24 @@ def _move_advice(mv, adv: Advice, add, cmd=None) -> None:
     stop_note = " משנים רק את [2] ו-[3] (אחרי סוף התנועה ובעמידה). [1] בזמן תנועה נשאר כמו שהוא."
     tr = mv.in_target
     if tr:
+        stop_ok = None
         if mv.end_error_peak <= tr:
-            adv.findings.append(f"✔ אחרי העצירה השגיאה (שיא {mv.end_error_peak:.0f}) נשארת בתוך TR=±{tr:.0f}: תקין, "
-                                "לא משנים כלום בשלב העצירה.")
-            return
-        if mv.settle_tr is not None and mv.settle_tr <= SETTLE_OK:
-            adv.findings.append(f"✔ אחרי העצירה הציר נכנס ל-TR=±{tr:.0f} תוך {mv.settle_tr * 1000:.0f}ms ונשאר בו: "
-                                "תקין, לא משנים כלום בשלב העצירה.")
+            stop_ok = f"אחרי העצירה השגיאה (שיא {mv.end_error_peak:.0f}) נשארת בתוך {wname}"
+        elif mv.settle_tr is not None and mv.settle_tr <= mv.settle_limit:
+            stop_ok = f"אחרי העצירה הציר נכנס ל-{wname} תוך {mv.settle_tr * 1000:.0f}ms ונשאר בו"
+        if stop_ok:
+            if motion_ok:
+                adv.meets_spec = True
+                adv.findings.append(f"✔ עומד בדרישות: בזמן נסיעה ובעצירה השגיאה בתוך {wname}. {stop_ok}. "
+                                    "לא ממשיכים לכייל: כל שינוי נוסף רק מסכן את מה שכבר עובד.")
+            else:
+                adv.findings.append(f"✔ {stop_ok}: תקין, לא משנים כלום בשלב העצירה.")
             return
         if mv.settle_tr is not None:
-            adv.findings.append(f"הציר נכנס ל-TR=±{tr:.0f} רק אחרי {mv.settle_tr * 1000:.0f}ms.")
+            adv.findings.append(f"הציר נכנס ל-{wname} רק אחרי {mv.settle_tr * 1000:.0f}ms "
+                                f"(מותר {mv.settle_limit * 1000:.0f}ms).")
         else:
-            adv.findings.append(f"✘ אחרי העצירה הציר לא נשאר בתוך TR=±{tr:.0f} עד סוף העמידה.")
+            adv.findings.append(f"✘ אחרי העצירה הציר לא נשאר בתוך {wname} עד סוף העמידה.")
     if mv.stick and not (tr and abs(mv.stuck_error) <= tr):
         free = (f"עד שהציר השתחרר אחרי {mv.stuck_time:.1f} שניות" if mv.stuck_time is not None
                 else "והציר לא השתחרר עד סוף העמידה")
@@ -328,7 +349,7 @@ def _move_advice(mv, adv: Advice, add, cmd=None) -> None:
         add("KP", STOP, 0.7, "הציר ממשיך להתנדנד עד סוף העמידה. מתחילים בהורדת KP." + stop_note)
     elif wobbles:
         add("KP", STOP, 0.8, "יש תנודה אחרי העצירה: KP גבוה מדי (לולאת מיקום מהירה מדי)." + stop_note)
-    elif settle is not None and settle > SETTLE_OK:
+    elif settle is not None and settle > (mv.settle_limit if tr else SETTLE_OK):
         add("KP", STOP, 1.2, f"הציר מתייצב לאט ({settle * 1000:.0f}ms" + (f" עד שהוא בתוך TR" if tr else "")
                              + ") ובלי תנודה: יש מקום להעלות KP." + stop_note)
     if abs(mv.final_error) > (tr if tr else 2 * mv.tolerance) and not (wobbles and slow):
@@ -485,11 +506,12 @@ def _full(mode: str, gains: dict, an: Analysis, adv: Advice) -> Advice:
             loop.changes += sub.changes
         else:
             loop.findings.append("אין בהקלטה שגיאת מיקום או מיקום רצוי, ולכן הלולאה לא נבדקה.")
-        if not loop.changes and cmd and cmd.ok and cmd.noise_ratio > 0.15:
+        if not loop.changes and not loop.meets_spec and cmd and cmd.ok and cmd.noise_ratio > 0.15:
             loop_add("KD", ALL, 0.8, "פקודת הדרייבר רועשת: בדרך כלל KD גבוה מדי.")
+        adv.meets_spec = loop.meets_spec
     adv.findings += loop.findings
     adv.changes += loop.changes
-    if not loop.changes and an.move and an.move.ok:
+    if not loop.changes and an.move and an.move.ok and not loop.meets_spec:
         adv.findings.append("הלולאה נראית טובה. אין צורך לשנות.")
     adv.status = "change" if adv.changes else "ok"
     return adv

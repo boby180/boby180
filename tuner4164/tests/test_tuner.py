@@ -642,7 +642,7 @@ def test_error_inside_tr_after_the_stop_needs_no_change():
     mv = move_metrics(t, pe, moving, pos=pos, cmd=cmd, tr=100)
     adv = Advice()
     _move_advice(mv, adv, lambda p, sets, f, why: adv.changes.append(gain_change({}, p, sets, f, why)))
-    assert adv.changes == [] and any("TR=±100" in f and "תקין" in f for f in adv.findings)
+    assert adv.changes == [] and adv.meets_spec and any("TR=±100" in f and "עומד בדרישות" in f for f in adv.findings)
 
 
 def test_error_outside_tr_is_still_fixed():
@@ -660,7 +660,8 @@ def test_offline_help_finds_the_right_topic():
     cases = {"למה זה רועד בזמן נסיעה": "vibration", "מה זה TR": "tr", "איך מאפסים את האופסט": "tacho_offset",
              "מה ההבדל בין KI[2] ל-KI[3]": "sets", "הטאכו לא מסומן": "tacho_mode", "הציר נתקע ליד המטרה": "friction",
              "איך לדעת אם הרעידה מכנית": "mechanical", "הוא מחזיר אותי לערכים שהיו": "loop",
-             "איך שומרים בבקר": "save", "זמזום בפקודה": "noise", "מסובב חדש": "rotators", "AG": "tacho_gain"}
+             "איך שומרים בבקר": "save", "זמזום בפקודה": "noise", "מסובב חדש": "rotators", "AG": "tacho_gain",
+             "מתי מפסיקים לכייל": "spec"}
     for q, tid in cases.items():
         assert search(q)[0].id == tid, q
     assert search("xyzzy") == []
@@ -674,3 +675,31 @@ def test_explain_tells_the_stage_and_what_to_expect():
     text = explain(adv, axis="X")
     assert "שלב 1" in text and "XAG" in text and "מה לצפות בהקלטה הבאה" in text
     assert "עדיין אין ניתוח" in explain(None)
+
+
+def test_vibration_inside_the_window_is_left_alone():
+    """SN 954: ripple of +-56 while moving, TR 100 - inside the window, so no KP change."""
+    from tune4164.analysis import CommandMetrics
+    t, vref, pe = _cruise_with_ripple(56, 3.5)
+    an = Analysis(move=move_metrics(t, pe, vref > 0, vref=vref, tr=100),
+                  command=CommandMetrics(saturated_pct=0, noise_ratio=0.01, peak=2802, ok=True), tacho=GOOD_TACHO)
+    adv = advise("PIV", "full", FULL_GAINS, an)
+    assert adv.changes == [] and adv.meets_spec
+
+
+def test_vibration_outside_the_window_is_still_fixed():
+    from tune4164.analysis import CommandMetrics
+    t, vref, pe = _cruise_with_ripple(56, 3.5)
+    an = Analysis(move=move_metrics(t, pe, vref > 0, vref=vref, tr=30),
+                  command=CommandMetrics(saturated_pct=0, noise_ratio=0.01, peak=2802, ok=True), tacho=GOOD_TACHO)
+    adv = advise("PIV", "full", FULL_GAINS, an)
+    assert adv.primary.param == "KP[1]" and not adv.meets_spec
+
+
+def test_user_window_and_settle_time_are_used():
+    from tune4164.advise import Advice, _move_advice, gain_change
+    t, pe, moving, pos, cmd = _friction_move()                 # stuck 37 counts for ~1.5 s
+    mv = move_metrics(t, pe, moving, pos=pos, cmd=cmd, tr=40, settle_limit=0.3, window_from_tr=False)
+    adv = Advice()
+    _move_advice(mv, adv, lambda p, sets, f, why: adv.changes.append(gain_change({}, p, sets, f, why)))
+    assert adv.meets_spec and any("החלון המותר ±40" in f for f in adv.findings)

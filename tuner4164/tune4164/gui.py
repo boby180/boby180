@@ -17,7 +17,7 @@ from PySide6.QtGui import QColor, QPalette
 from PySide6.QtWidgets import (
     QLineEdit, QListWidget, QListWidgetItem,
     QApplication, QCheckBox, QComboBox, QFileDialog, QFormLayout, QGroupBox, QHBoxLayout, QHeaderView, QLabel,
-    QDialog, QDialogButtonBox, QFrame, QInputDialog, QScrollArea, QMainWindow, QMessageBox, QPushButton, QTabWidget, QSpinBox, QSplitter, QTableWidget, QTableWidgetItem, QTextBrowser, QVBoxLayout,
+    QDialog, QDialogButtonBox, QDoubleSpinBox, QFrame, QInputDialog, QScrollArea, QMainWindow, QMessageBox, QPushButton, QTabWidget, QSpinBox, QSplitter, QTableWidget, QTableWidgetItem, QTextBrowser, QVBoxLayout,
     QWidget,
 )
 
@@ -240,6 +240,23 @@ class MainWindow(QMainWindow):
         self.offset_ok.setToolTip("נשמר לכל מסובב וציר. מסמנים כשבדקתם ב-SC-Shell ש-AI מראה 0 כשהציר עומד.")
         self.offset_ok.toggled.connect(self._offset_ok_toggled)
         form.addRow(self.offset_ok)
+        self.req_win = QSpinBox()
+        self.req_win.setRange(0, 100_000_000)
+        self.req_win.setSpecialValueText("לפי TR מה-PRM")
+        self.req_win.setSuffix(" ספירות")
+        self.req_win.setToolTip("שגיאה בתוך החלון (בזמן נסיעה ובעצירה) נחשבת עומדת בדרישות, והתוכנה לא ממשיכה לכייל. "
+                                "0 = לפי TR של הבקר. נשמר לכל מסובב וציר.")
+        self.req_settle = QDoubleSpinBox()
+        self.req_settle.setRange(0.05, 10.0)
+        self.req_settle.setSingleStep(0.05)
+        self.req_settle.setDecimals(2)
+        self.req_settle.setValue(0.3)
+        self.req_settle.setSuffix(" s")
+        self.req_settle.setToolTip("כמה זמן מותר לציר להיכנס לחלון אחרי העצירה. נשמר לכל מסובב וציר.")
+        self.req_win.valueChanged.connect(self._req_changed)
+        self.req_settle.valueChanged.connect(self._req_changed)
+        form.addRow("חלון שגיאה מותר:", self.req_win)
+        form.addRow("זמן כניסה לחלון אחרי עצירה:", self.req_settle)
         lay.addWidget(setup)
 
         cols_box = QGroupBox("עמודות בהקלטה")
@@ -484,6 +501,12 @@ class MainWindow(QMainWindow):
     def _offset_key(self) -> str:
         return f"offset_ok/{self.unit.currentText()}/{self.axis.currentText()}"
 
+    def _req_changed(self, *_):
+        if hasattr(self, "unit") and not getattr(self, "_loading_req", False):
+            key = f"{self.unit.currentText()}/{self.axis.currentText()}"
+            self.prefs.setValue(f"req_win/{key}", self.req_win.value())
+            self.prefs.setValue(f"req_settle/{key}", self.req_settle.value())
+
     def _offset_ok_toggled(self, on: bool) -> None:
         if hasattr(self, "unit"):
             self.prefs.setValue(self._offset_key(), "1" if on else "0")
@@ -493,6 +516,11 @@ class MainWindow(QMainWindow):
             self.offset_ok.blockSignals(True)
             self.offset_ok.setChecked(self.prefs.value(self._offset_key(), "0") == "1")
             self.offset_ok.blockSignals(False)
+            key = f"{self.unit.currentText()}/{axis}"
+            self._loading_req = True
+            self.req_win.setValue(int(self.prefs.value(f"req_win/{key}", 0) or 0))
+            self.req_settle.setValue(float(self.prefs.value(f"req_settle/{key}", 0.3) or 0.3))
+            self._loading_req = False
         mode = self.prm.mode(axis)
         if mode:
             self.mode.setCurrentText(mode)
@@ -558,7 +586,9 @@ class MainWindow(QMainWindow):
                 an.warnings.append("אין בהקלטה מיקום רצוי: זמני התנועה והעצירה זוהו לפי מהירות הציר בפועל. "
                                    "עדיף להוסיף להקלטה את Desired Position.")
             if pe is not None:
-                an.move = move_metrics(t, pe, moving, vref=vref, pos=act, cmd=cmd, tr=gains.get("TR"))
+                win = self.req_win.value() or gains.get("TR")
+                an.move = move_metrics(t, pe, moving, vref=vref, pos=act, cmd=cmd, tr=win,
+                                       settle_limit=self.req_settle.value(), window_from_tr=self.req_win.value() == 0)
         if test == "full" and vel is not None and tacho is not None:
             an.tacho = tacho_metrics(vel, tacho, t=t)
         if test == "tacho":
@@ -707,7 +737,8 @@ class MainWindow(QMainWindow):
                 self.comparison.notes.insert(0, f"נשמר ל-\"{unit}\" למרות שה-PRM שונה מההקלטה הקודמת "
                                                 f"({', '.join(diff)}).")
             sensor_fix = any(k in ("AS", "AG", "AF") for c in self.advice.changes for k, _, _ in c.items())
-            back = step_back(self.comparison, gains) if not diff and not sensor_fix else None
+            back = (step_back(self.comparison, gains)
+                    if not diff and not sensor_fix and not self.advice.meets_spec else None)
             if back is not None:
                 undone = {k for k, _, _ in back.items()}
                 self.advice.changes = [back] + [c for c in self.advice.changes
@@ -721,7 +752,7 @@ class MainWindow(QMainWindow):
         # only runs made with the same speed-sensor scale on the same controller can be compared
         seq = [r for r in seq if all(r.get("gains", {}).get(k) == entry["gains"].get(k) for k in ("AG", "AF"))
                and not other_unit(r.get("fingerprint"), entry["fingerprint"])]
-        if seq:
+        if seq and not self.advice.meets_spec:
             for note in reversed(guard(self.advice, entry, seq)):
                 self.advice.warnings.insert(0, note)
         entry.update(advice_fields(self.advice))
@@ -1197,7 +1228,11 @@ class MainWindow(QMainWindow):
             else:
                 parts.append(f"<p style='color:#b86e00'>⚠ {html.escape(w)}</p>")
         parts.append("<ul>" + "".join(f"<li>{html.escape(f)}</li>" for f in a.findings) + "</ul>")
-        if a.status == "stop":
+        if a.meets_spec and not a.changes:
+            parts.append("<div style='background:#e8f4ec; border:2px solid #1f9d55; padding:8px;'>"
+                         "<p style='font-size:13pt; color:#1f7a44'><b>✔ הציר עומד בדרישות: לא ממשיכים לכייל.</b></p>"
+                         "<p>השגיאה בזמן נסיעה ובעצירה בתוך החלון המותר. אפשר לשמור בבקר (SV) ולעבור לציר הבא.</p></div>")
+        elif a.status == "stop":
             parts.append("<p style='color:#c62f2f'><b>אין המלצה לשינוי מההקלטה הזו.</b></p>")
         elif a.primary:
             p = a.primary

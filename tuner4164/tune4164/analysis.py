@@ -40,7 +40,10 @@ class MoveMetrics:
     settle_after_end: float | None = None
     final_error: float = 0.0             # PE at the end of the standstill
     tolerance: float = 0.0
-    in_target: float | None = None       # TR of the controller: |PE| inside it counts as "in target"
+    in_target: float | None = None       # allowed error window (TR by default): |PE| inside it is fine
+    window_from_tr: bool = True          # the window is the controller's TR (else set by the user)
+    settle_limit: float = 0.3            # allowed time to get inside the window after the stop [s]
+    cruise_peak: float | None = None     # largest |PE| while moving at speed
     settle_tr: float | None = None       # stop -> |PE| inside TR for good [s]
     sustained: bool = False              # still oscillating at the end of the standstill
     stick: bool = False                  # friction: stuck while the command ramps, then breaks free
@@ -232,13 +235,14 @@ def _stick_slip(m: "MoveMetrics", t: np.ndarray, pe: np.ndarray, pos: np.ndarray
 def move_metrics(t: np.ndarray, pe: np.ndarray, moving: np.ndarray | None = None,
                  tolerance: float | None = None, vref: np.ndarray | None = None,
                  pos: np.ndarray | None = None, cmd: np.ndarray | None = None,
-                 tr: float | None = None) -> MoveMetrics:
+                 tr: float | None = None, settle_limit: float = 0.3, window_from_tr: bool = True) -> MoveMetrics:
     """Point-to-point motion judged from the position error.
 
     'moving' marks samples where the desired position changes (from the desired position or
     desired velocity). Cruise = moving at (near) the top desired speed. The stop judged is the
     one followed by the longest standstill (at least 0.2 s)."""
     m = MoveMetrics()
+    m.settle_limit, m.window_from_tr = settle_limit, window_from_tr
     n = len(pe)
     if n < 20:
         m.note = "מעט מדי נקודות"
@@ -265,6 +269,18 @@ def move_metrics(t: np.ndarray, pe: np.ndarray, moving: np.ndarray | None = None
             m.cruise_ripple = float(np.std(pe[cruise] - np.where(vref[cruise] > 0, m.following_pos or 0, m.following_neg or 0)))
             m.vib_amp = m.cruise_ripple * np.sqrt(2)
             m.vib_freq = _main_freq(t, pe, cruise)
+            m.cruise_peak = float(np.max(np.abs(pe[cruise])))
+    elif np.any(moving):
+        # no desired speed recorded: judge the moving part without its first and last 0.5 s (accelerations)
+        dt = float(np.median(np.diff(t))) or 1e-3
+        k = max(1, int(round(0.5 / dt)))
+        core = moving.copy()
+        edges_m = np.flatnonzero(np.diff(np.concatenate(([0], moving.astype(int), [0]))))
+        for a0, b0 in zip(edges_m[::2], edges_m[1::2]):
+            core[a0:min(b0, a0 + k)] = False
+            core[max(a0, b0 - k):b0] = False
+        if np.any(core):
+            m.cruise_peak = float(np.max(np.abs(pe[core])))
     # standstill segments after a motion
     best = None
     edges = np.flatnonzero(np.diff(moving.astype(int)))
