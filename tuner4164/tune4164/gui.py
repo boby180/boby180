@@ -171,6 +171,7 @@ class MainWindow(QMainWindow):
         split.addWidget(self._right())
         split.setSizes([520, 880])
         self._fill_history()
+        self._axis_changed(self.axis.currentText())   # the per-rotator/axis offset checkbox
 
     # ---- building ----
     def _left(self) -> QWidget:
@@ -229,6 +230,10 @@ class MainWindow(QMainWindow):
         form.addRow("ציר:", self.axis)
         form.addRow("מבנה בקרה:", self.mode)
         form.addRow("סוג הבדיקה:", self.test)
+        self.offset_ok = QCheckBox("אופסט הטאכו אופס ידנית (AI=0 ב-SC-Shell): לא לבדוק אותו מההקלטה")
+        self.offset_ok.setToolTip("נשמר לכל מסובב וציר. מסמנים כשבדקתם ב-SC-Shell ש-AI מראה 0 כשהציר עומד.")
+        self.offset_ok.toggled.connect(self._offset_ok_toggled)
+        form.addRow(self.offset_ok)
         lay.addWidget(setup)
 
         cols_box = QGroupBox("עמודות בהקלטה")
@@ -461,7 +466,18 @@ class MainWindow(QMainWindow):
             parts.append(f"הקלטה: {self.rec.path.name}")
         self.files.setText("   ·   ".join(parts) or "לא נטענו קבצים")
 
+    def _offset_key(self) -> str:
+        return f"offset_ok/{self.unit.currentText()}/{self.axis.currentText()}"
+
+    def _offset_ok_toggled(self, on: bool) -> None:
+        if hasattr(self, "unit"):
+            self.prefs.setValue(self._offset_key(), "1" if on else "0")
+
     def _axis_changed(self, axis: str) -> None:
+        if hasattr(self, "offset_ok") and hasattr(self, "unit"):
+            self.offset_ok.blockSignals(True)
+            self.offset_ok.setChecked(self.prefs.value(self._offset_key(), "0") == "1")
+            self.offset_ok.blockSignals(False)
         mode = self.prm.mode(axis)
         if mode:
             self.mode.setCurrentText(mode)
@@ -529,13 +545,13 @@ class MainWindow(QMainWindow):
             if pe is not None:
                 an.move = move_metrics(t, pe, moving, vref=vref, pos=act, cmd=cmd)
         if test == "full" and vel is not None and tacho is not None:
-            an.tacho = tacho_metrics(vel, tacho)
+            an.tacho = tacho_metrics(vel, tacho, t=t)
         if test == "tacho":
             if vel is None and act is not None:
                 vel = np.gradient(act, t)
                 an.warnings.append("אין עמודת מהירות. המהירות חושבה מהמיקום (ספירות לשנייה).")
             if vel is not None and tacho is not None:
-                an.tacho = tacho_metrics(vel, tacho)
+                an.tacho = tacho_metrics(vel, tacho, t=t)
         elif test == "velocity_step":
             if self.derive.isChecked():
                 dt = np.gradient(t)
@@ -547,6 +563,9 @@ class MainWindow(QMainWindow):
         elif test == "position_step":
             if act is not None:
                 an.step = step_metrics(t, act, ref)
+        if an.tacho is not None and self.offset_ok.isChecked():
+            an.tacho.offset_manual = True
+            an.tacho.still_offset = None
         if cmd is not None:
             an.command = command_metrics(cmd, gains.get("TL") or None)
         self.advice = advise(self.mode.currentText(), test, gains, an)
@@ -1101,8 +1120,9 @@ class MainWindow(QMainWindow):
                              f"טען את קובץ ה-PRM של הבקר (או הקלד את הערך בטבלה בשורה {axis}) ולחץ שוב נתח והמלץ.</b></p>")
             parts.append(
                 f"<div style='background:#e8f4ec; border:1px solid #1f9d55; padding:8px;'>"
-                f"<p style='font-size:13pt'><b>השינוי המומלץ עכשיו "
-                f"({LRM}{'+' if p.percent > 0 else ''}{p.percent}%{LRM}):</b></p>"
+                f"<p style='font-size:13pt'><b>השינוי המומלץ עכשיו"
+                + (f" ({LRM}{'+' if p.percent > 0 else ''}{p.percent}%{LRM})" if p.show_percent else "")
+                + ":</b></p>"
                 f"<ul style='font-size:13pt'>{self._items_html(p, axis)}</ul>"
                 f"<p>{html.escape(p.reason)}</p>"
                 + (f"<p>בקונסולה של תוכנת הבקר: <code>{LRM}{html.escape(self._command())}{LRM}</code>, "
@@ -1110,7 +1130,8 @@ class MainWindow(QMainWindow):
                 + f"<p style='color:#555'>{html.escape(SETS_NOTE)}</p></div>")
             if len(a.changes) > 1:
                 parts.append("<p><b>אחר כך, אם עדיין צריך:</b></p><ul>" + "".join(
-                    f"<li>{'+' if c.percent > 0 else ''}{c.percent}%: {html.escape(c.reason)}"
+                    (f"<li>{'+' if c.percent > 0 else ''}{c.percent}%: " if c.show_percent else "<li>")
+                    + f"{html.escape(c.reason)}"
                     f"<ul>{self._items_html(c, axis)}</ul></li>"
                     for c in a.changes[1:]) + "</ul>")
         else:
@@ -1146,7 +1167,7 @@ class MainWindow(QMainWindow):
         if not name:
             return
         path = Path(name) if name.lower().endswith(".prm") else Path(name + ".prm")
-        note = ", ".join(f"{axis}{k}: {o} -> {n}" for k, o, n in p.items()) + f" ({p.percent:+d}%)"
+        note = ", ".join(f"{axis}{k}: {o} -> {n}" for k, o, n in p.items()) + (f" ({p.percent:+d}%)" if p.show_percent else "")
         path.write_bytes(prm_text({(axis, k): n for k, _, n in p.items()}, note).encode("ascii"))
         self.statusBar().showMessage(f"נשמר: {path}", 6000)
 

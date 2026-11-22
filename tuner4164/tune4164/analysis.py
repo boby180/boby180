@@ -74,6 +74,7 @@ class TachoMetrics:
     ratio_pos: float | None = None       # the same, moving forward / backward only
     ratio_neg: float | None = None
     still_samples: int = 0
+    offset_manual: bool = False          # the user zeroed AI by hand in SC-Shell: the offset is not judged
     ok: bool = False
     note: str = ""
 
@@ -297,7 +298,19 @@ def move_metrics(t: np.ndarray, pe: np.ndarray, moving: np.ndarray | None = None
     return m
 
 
-def tacho_metrics(vel: np.ndarray, tacho: np.ndarray, max_lag: int = 40) -> TachoMetrics:
+def _standstill(t: np.ndarray, v: np.ndarray, min_len: float = 0.5, settle: float = 0.3) -> np.ndarray:
+    """Real standstill only: runs where the speed stays at ~0 for at least 'min_len' s, without their first
+    'settle' s (right after a stop the tacho is still coming down, and that is not an offset)."""
+    still = np.abs(v) <= 0.005 * (np.max(np.abs(v)) + 1e-12)
+    out = np.zeros(len(v), dtype=bool)
+    edges = np.flatnonzero(np.diff(np.concatenate(([0], still.astype(int), [0]))))
+    for a, b in zip(edges[::2], edges[1::2]):
+        if t[b - 1] - t[a] >= min_len:
+            out[a:b] = t[a:b] >= t[a] + settle
+    return out
+
+
+def tacho_metrics(vel: np.ndarray, tacho: np.ndarray, max_lag: int = 40, t: np.ndarray | None = None) -> TachoMetrics:
     m = TachoMetrics()
     n = min(len(vel), len(tacho))
     if n < 50 or np.std(vel[:n]) == 0:
@@ -309,7 +322,8 @@ def tacho_metrics(vel: np.ndarray, tacho: np.ndarray, max_lag: int = 40) -> Tach
     res = a - (m.gain * v + m.offset)
     m.residual_pct = float(np.std(res) / (np.std(a) + 1e-12) * 100)
     m.offset_pct = float(abs(m.offset) / (abs(m.gain) * np.max(np.abs(v)) + 1e-12) * 100)
-    still = np.abs(v) <= 0.005 * np.max(np.abs(v))
+    tt = t[:n].astype(float) if t is not None and len(t) >= n else np.arange(n) * 0.003
+    still = _standstill(tt, v)
     m.still_samples = int(still.sum())
     if m.still_samples >= 20:
         m.still_offset = float(np.mean(a[still]))

@@ -68,6 +68,10 @@ class Change:
         return ", ".join(k for k, _, _ in self.items())
 
     @property
+    def show_percent(self) -> bool:
+        return self.param != "AS"         # AS is an offset in A/D steps: a percent means nothing
+
+    @property
     def percent(self) -> int:
         if self.param in self.targets and self.old and self.param != "AG":   # AG may move together with AF
             return int(round((self.targets[self.param] / self.old - 1) * 100))
@@ -359,9 +363,11 @@ def _sensor_checks(tm, gains: dict, adv: Advice) -> bool:
                                     "Analog In, משנים את AS עד ש-AI מראה 0 כשהציר עומד.")
             return True
         adv.findings.append(f"✔ אופסט הטאכו מאופס: כשהציר עומד הוא קורא {tm.still_offset:+.1f}.")
+    elif tm.offset_manual:
+        adv.findings.append("✔ אופסט הטאכו סומן כמאופס ידנית (AI=0 ב-SC-Shell), ולכן הוא לא נבדק מההקלטה.")
     else:
-        adv.findings.append("בהקלטה אין מספיק זמן עמידה כדי לבדוק את אופסט הטאכו. בודקים ב-SC-Shell (Analog In) "
-                            "ש-AI מראה 0 כשהציר עומד, ורק אז ממשיכים ל-AG.")
+        adv.findings.append("בהקלטה אין עמידה רציפה של חצי שנייה לפחות, ולכן אופסט הטאכו לא נבדק ממנה. בודקים "
+                            "ב-SC-Shell (Analog In) ש-AI מראה 0 כשהציר עומד, ומסמנים \"האופסט אופס ידנית\".")
     if meas < 0:
         bad = True
         adv.warnings.insert(0, "חיישן המהירות (הטאכו) לא מכויל: הסימן שלו הפוך לאנקודר. צריך להפוך את סימן AG "

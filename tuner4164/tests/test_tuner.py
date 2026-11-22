@@ -578,3 +578,36 @@ def test_step_back_never_undoes_a_sensor_fix():
     c = compare(prev, cur)
     assert c.verdict == "worse" and step_back(c, cur["gains"]) is None
     assert any("הטאכו כויל מחדש" in n for n in c.notes)
+
+
+def test_short_pause_is_not_taken_as_standstill():
+    """The tacho lags: around a brief stop it still reads something, which is not an offset."""
+    from tune4164.analysis import tacho_metrics
+    t = np.arange(0, 30, 0.003)
+    vel = np.where(t < 17, -6000.0, np.where(t < 17.4, 0.0, 5000.0))      # only a 0.4 s pause
+    tacho = np.convolve(vel, np.ones(60) / 60, mode="same")                 # lagging sensor, no offset
+    tm = tacho_metrics(vel, tacho, t=t)
+    assert tm.still_offset is None
+    adv = advise("PIV", "full", {**FULL_GAINS, "AS": 2033, "AG": -12341, "AF": 11}, Analysis(tacho=tm))
+    assert not any(k == "AS" for c in adv.changes for k, _, _ in c.items())
+
+
+def test_long_standstill_still_finds_a_real_offset():
+    from tune4164.analysis import tacho_metrics
+    t = np.arange(0, 10, 0.003)
+    vel = np.where((t > 3) & (t < 7), 8000.0, 0.0)
+    tm = tacho_metrics(vel, vel + 40, t=t)
+    assert abs(tm.still_offset - 40) < 0.5
+
+
+def test_manual_offset_skips_the_offset_step():
+    from tune4164.analysis import TachoMetrics
+    tm = TachoMetrics(gain=1.0, correlation=0.9999, residual_pct=1, still_offset=None, offset_manual=True, ok=True)
+    adv = advise("PIV", "full", {**FULL_GAINS, "AS": 2033, "AG": -12341, "AF": 11}, Analysis(tacho=tm))
+    assert any("סומן כמאופס ידנית" in f for f in adv.findings) and adv.changes == [] or adv.primary.param != "AS"
+
+
+def test_as_change_shows_no_percent():
+    from tune4164.advise import zero_offset_change
+    c = zero_offset_change({"AS": 2033, "AG": -12341, "AF": 11}, 175)
+    assert c is not None and not c.show_percent
