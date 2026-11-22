@@ -78,6 +78,7 @@ class TachoMetrics:
     ratio: float = 0.0                   # encoder speed / sensor (XVeldt / XAnlgInp) while moving
     ratio_pos: float | None = None       # the same, moving forward / backward only
     ratio_neg: float | None = None
+    top_speed: float = 0.0               # largest |encoder speed| in the recording
     still_samples: int = 0
     offset_manual: bool = False          # the user zeroed AI by hand in SC-Shell: the offset is not judged
     ok: bool = False
@@ -354,6 +355,7 @@ def tacho_metrics(vel: np.ndarray, tacho: np.ndarray, max_lag: int = 40, t: np.n
     if m.still_samples >= 20:
         m.still_offset = float(np.mean(a[still]))
     # XVeldt / XAnlgInp while moving (|speed| above 30% of the top), offset at standstill taken off
+    m.top_speed = float(np.max(np.abs(v)))
     a0 = a - (m.still_offset or 0.0)
     mov = np.abs(v) > 0.3 * np.max(np.abs(v))
     if np.any(mov) and np.dot(a0[mov], a0[mov]) > 0:

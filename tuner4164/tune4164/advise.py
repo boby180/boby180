@@ -362,6 +362,20 @@ SENSOR_MAX_NOISE = 5.0    # % of the speed
 SENSOR_MAX_OFFSET = 2.0   # % of the reading at the top speed
 
 
+OFFSET_MIN_STEPS = 2       # a smaller offset is A/D quantization: ignored
+OFFSET_MIN_SPEED = 0.01    # ... and so is one worth under 1% of the top speed once the gain is right
+
+
+def offset_matters(gains: dict, still: float, ratio: float, top_speed: float) -> bool:
+    """Is the standstill reading big enough to fix before AG? (1 A/D step on a badly scaled tacho is not.)"""
+    ag, af = gains.get("AG"), gains.get("AF")
+    if ag in (None, 0) or af is None:
+        return abs(still) > 2
+    steps = abs(still / (ag * 2.0 ** -af))
+    speed_err = abs(still * (ratio or 1.0))          # what the offset becomes in counts/s after the gain fix
+    return steps >= OFFSET_MIN_STEPS and (top_speed <= 0 or speed_err >= OFFSET_MIN_SPEED * top_speed)
+
+
 def zero_offset_change(gains: dict, still: float) -> Change | None:
     """Step 1a: AS so the sensor reads 0 while the axis stands. The reading is (input - AS) x AG x 2^-AF, so
     the input offset in A/D steps is still / (AG x 2^-AF)."""
@@ -414,7 +428,10 @@ def _sensor_checks(tm, gains: dict, adv: Advice) -> bool:
                           f"השהיה {tm.lag_samples} דגימות)")
     meas = 1.0 / r if r else tm.gain      # sensor / encoder, as the rest of the checks use it
     # 1a: the reading at standstill must be 0 before AG can be calibrated
-    if tm.still_offset is not None:
+    if tm.still_offset is not None and not offset_matters(gains, tm.still_offset, r, tm.top_speed):
+        adv.findings.append(f"✔ אופסט הטאכו קטן מכדי להשפיע (קריאה של {tm.still_offset:+.1f} בעמידה, פחות משני צעדים של "
+                            "הכניסה האנלוגית או פחות מ-1% מהמהירות): מתעלמים ממנו ועוברים להגבר.")
+    elif tm.still_offset is not None:
         zc = zero_offset_change(gains, tm.still_offset)
         step = abs(gains["AG"] * 2.0 ** -gains["AF"]) if gains.get("AG") and gains.get("AF") is not None else None
         if zc is not None or (step is None and abs(tm.still_offset) > 2):

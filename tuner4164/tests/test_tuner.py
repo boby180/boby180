@@ -530,7 +530,7 @@ def test_zeroed_tacho_goes_on_to_ag():
     gains = {**FULL_GAINS, "AS": 2029, "AG": -11012, "AF": 11}
     tm = TachoMetrics(gain=0.1621, offset=1, correlation=0.9997, residual_pct=2.3, still_offset=1.5, ok=True)
     adv = advise("PIV", "full", gains, Analysis(tacho=tm))
-    assert adv.primary.param == "AG" and any("אופסט הטאכו מאופס" in f for f in adv.findings)
+    assert adv.primary.param == "AG" and any("אופסט הטאכו" in f and "✔" in f for f in adv.findings)
 
 
 def test_still_offset_is_measured_from_the_standstill_part():
@@ -703,3 +703,25 @@ def test_user_window_and_settle_time_are_used():
     adv = Advice()
     _move_advice(mv, adv, lambda p, sets, f, why: adv.changes.append(gain_change({}, p, sets, f, why)))
     assert adv.meets_spec and any("החלון המותר ±40" in f for f in adv.findings)
+
+
+def test_one_step_offset_is_ignored_and_ag_comes_first():
+    """Y axis: AS 2030 -> 2029 was advised (one A/D step) while the tacho gain was far off."""
+    from tune4164.analysis import TachoMetrics
+    gains = {**FULL_GAINS, "CG": 28739, "AS": 2030, "AG": -12341, "AF": 11}
+    step = 12341 / 2048                                          # one A/D step in reading units (~6)
+    tm = TachoMetrics(gain=0.2, correlation=0.9997, residual_pct=2, still_offset=step * 1.1, ratio=5.0,
+                      top_speed=20000, ok=True)
+    adv = advise("PIV", "full", gains, Analysis(tacho=tm))
+    assert adv.primary.param == "AG" and not any(k == "AS" for c in adv.changes for k, _, _ in c.items())
+    assert any("קטן מכדי להשפיע" in f for f in adv.findings)
+
+
+def test_real_offset_still_comes_before_ag():
+    """560-1: +55 at standstill, about 10 A/D steps and 1.7% of the top speed after the gain fix."""
+    from tune4164.analysis import TachoMetrics
+    gains = {**FULL_GAINS, "CG": 28739, "AS": 2038, "AG": -11012, "AF": 11}
+    tm = TachoMetrics(gain=0.162, correlation=0.9997, residual_pct=2, still_offset=55, ratio=6.17,
+                      top_speed=20000, ok=True)
+    adv = advise("PIV", "full", gains, Analysis(tacho=tm))
+    assert adv.primary.param == "AS"
