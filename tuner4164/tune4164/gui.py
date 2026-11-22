@@ -399,7 +399,12 @@ class MainWindow(QMainWindow):
                 v = self.prm.get(axis, key)
                 self.table.setItem(r, c, QTableWidgetItem("" if v is None else str(v)))
             mode = self.prm.mode(axis)
-            self.table.setItem(r, len(TUNING_KEYS), QTableWidgetItem(mode or "?"))
+            tacho = self.prm.tacho_mode(axis)
+            cell = QTableWidgetItem((mode or "?") + (", טאכו כבוי ⚠" if mode == "PIV" and tacho is False else ""))
+            if mode == "PIV" and tacho is False:
+                cell.setForeground(QColor("#c62f2f"))
+                cell.setToolTip("ב-CG לא מסומן Use Analog Input (AI) as Velocity Feedback (Tacho Mode)")
+            self.table.setItem(r, len(TUNING_KEYS), cell)
         found = self.prm.axes()
         self.prm_note.setText(f"{Path(name).name}: {len(self.prm.values)} ערכים, צירים {', '.join(found) or '—'}"
                               + (f". {len(self.prm.skipped)} שורות לא זוהו" if self.prm.skipped else ""))
@@ -1104,7 +1109,7 @@ class MainWindow(QMainWindow):
                          + "".join(f"<li>{html.escape(m)}</li>" for m in missing)
                          + "</ul><p>ראה את ההסבר בכחול למעלה, או לחץ \"הסבר מלא: איזו הקלטה לעשות\".</p></div>")
         for w in a.warnings:
-            if w.startswith("חיישן המהירות (הטאכו) לא מכויל"):
+            if w.startswith("חיישן המהירות (הטאכו) לא מכויל") or w.startswith("מצב טאכו כבוי"):
                 parts.append("<div style='background:#fdecec; border:2px solid #c62f2f; padding:8px;'>"
                              f"<p style='color:#a11d1d; font-size:12pt'><b>⚠ {html.escape(w)}</b></p></div>")
             else:

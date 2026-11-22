@@ -19,6 +19,10 @@ GAIN_SETS = (1, 2, 3)
 TUNING_KEYS = [f"{k}[{i}]" for k in ("KP", "KI", "KD") for i in GAIN_SETS] + ["IS", "ER", "TL", "FF[1]", "FF[2]", "AS", "AG", "AF", "CG"]
 # CG bit 3 (zero based) selects the control scheme (Users Manual chapter 6); set = PID, clear = PIV.
 CG_PID_BIT = 3
+# CG bit 6 = "Use Analog Input (AI) as Velocity Feedback (Tacho Mode)". Not in the manual's text: the SC-Shell
+# Configuration dialog lists the CG bits in order (bit 3 = PID and bit 7 = dual loop are documented, and they
+# are the 4th and 8th boxes), the tacho box is the 7th, and every PRM with a working tacho had it set.
+CG_TACHO_BIT = 6
 
 _LINE = re.compile(r"^\s*([A-Z])\s*([A-Z]{2})\s*(?:\[\s*(\d+)\s*\])?\s*=\s*(-?\d+)\s*$")
 
@@ -43,6 +47,10 @@ class PrmFile:
         if cg is None:
             return None
         return "PID" if cg >> CG_PID_BIT & 1 else "PIV"
+
+    def tacho_mode(self, axis: str) -> bool | None:
+        cg = self.get(axis, "CG")
+        return None if cg is None else bool(cg >> CG_TACHO_BIT & 1)
 
     def axes(self) -> list[str]:
         return [a for a in AXES if any(k[0] == a for k in self.values)]

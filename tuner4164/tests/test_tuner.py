@@ -611,3 +611,26 @@ def test_as_change_shows_no_percent():
     from tune4164.advise import zero_offset_change
     c = zero_offset_change({"AS": 2033, "AG": -12341, "AF": 11}, 175)
     assert c is not None and not c.show_percent
+
+
+def test_tacho_mode_off_is_reported_before_anything_else():
+    from tune4164.analysis import TachoMetrics
+    tm = TachoMetrics(gain=0.16, correlation=0.9997, residual_pct=2, still_offset=175, ok=True)
+    adv = advise("PIV", "full", {**FULL_GAINS, "CG": 28739 & ~64, "AS": 2033, "AG": -12341, "AF": 11}, Analysis(tacho=tm))
+    assert adv.primary.items() == [("CG", 28675, 28739)] and len(adv.changes) == 1
+    assert adv.warnings[0].startswith("מצב טאכו כבוי") and not adv.primary.show_percent
+
+
+def test_tacho_mode_on_goes_on_to_the_sensor():
+    from tune4164.analysis import TachoMetrics
+    from tune4164.prm import parse_prm
+    tm = TachoMetrics(gain=1.0, correlation=0.9999, residual_pct=1, still_offset=0.5, ok=True)
+    adv = advise("PIV", "full", {**FULL_GAINS, "CG": 28739, "AS": 2033, "AG": -12341, "AF": 11}, Analysis(tacho=tm))
+    assert not any(w.startswith("מצב טאכו כבוי") for w in adv.warnings)
+    prm = parse_prm("XCG=28739\nYCG=28675\n")
+    assert prm.tacho_mode("X") is True and prm.tacho_mode("Y") is False and prm.tacho_mode("Z") is None
+
+
+def test_pid_axis_needs_no_tacho_mode():
+    from tune4164.advise import Advice, tacho_mode_off
+    assert tacho_mode_off("PID", {"CG": 8}, Advice()) is False

@@ -14,6 +14,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from .analysis import Analysis
+from .prm import CG_TACHO_BIT
 
 TESTS = {
     "full": "בדיקה מלאה: חיישן מהירות ואז הלולאה (מומלץ)",
@@ -69,7 +70,7 @@ class Change:
 
     @property
     def show_percent(self) -> bool:
-        return self.param != "AS"         # AS is an offset in A/D steps: a percent means nothing
+        return self.param not in ("AS", "CG")   # an offset / a bit field: a percent means nothing
 
     @property
     def percent(self) -> int:
@@ -166,6 +167,8 @@ def advise(mode: str, test: str, gains: dict[str, int | None], an: Analysis) -> 
                            "מה שנשמע כזמזום או שריקה. שקול גם מסנן מסדר 2 (100-400Hz) כפי שהיצרן ממליץ.")
 
     if test == "tacho":
+        if tacho_mode_off(mode, gains, adv):
+            return adv
         tm = an.tacho
         if not (tm and tm.ok):
             adv.findings.append(tm.note if tm else "בחר עמודת מהירות מהאנקודר ועמודת חיישן מהירות")
@@ -337,6 +340,28 @@ def zero_offset_change(gains: dict, still: float) -> Change | None:
                   (), {"AS": as_ + delta})
 
 
+TACHO_OFF = "מצב טאכו כבוי"
+
+
+def tacho_mode_off(mode: str, gains: dict, adv: Advice) -> bool:
+    """Step 0 in PIV: the velocity loop must use the tacho at all (CG bit 6). Returns True when it does not."""
+    cg = gains.get("CG")
+    if mode != "PIV" or cg is None or cg >> CG_TACHO_BIT & 1:
+        return False
+    new = cg | 1 << CG_TACHO_BIT
+    adv.warnings.insert(0, f"{TACHO_OFF}: ב-CG={cg} לא מסומן \"Use Analog Input (AI) as Velocity Feedback (Tacho Mode)\" "
+                           f"(ביט {CG_TACHO_BIT}). לולאת המהירות עובדת עכשיו לפי האנקודר ולא לפי הטאכו, ולכן כיול AS / AG "
+                           f"לא משנה כלום. קודם מדליקים מצב טאכו, ורק אז מכיילים.")
+    adv.changes.append(Change("CG", cg, new / cg if cg else 1.0,
+                              f"מדליקים מצב טאכו: CG מ-{cg} ל-{new} (מוסיפים את ביט {CG_TACHO_BIT}). אפשר גם ב-SC-Shell: "
+                              f"Configuration, לסמן \"Use Analog Input (AI) as Velocity Feedback (Tacho Mode)\". עושים "
+                              f"את זה עם מנוע כבוי (MO=0), במהירות נמוכה אחר כך ועם יד על לחצן החירום, ומקליטים שוב.",
+                              (), {"CG": new}))
+    adv.findings.append("שלב 1 (הטאכו) ושלב 2 (הלולאה) לא נבדקו: מצב טאכו כבוי.")
+    adv.status = "change"
+    return True
+
+
 def _sensor_checks(tm, gains: dict, adv: Advice) -> bool:
     """All the speed-sensor checks; returns True when anything is not OK (then nothing else is advised).
     Order: 1a zero offset (AI = 0 at standstill, by AS) -> 1b gain and sign (AG) -> match, noise."""
@@ -404,6 +429,8 @@ def _sensor_checks(tm, gains: dict, adv: Advice) -> bool:
 def _full(mode: str, gains: dict, an: Analysis, adv: Advice) -> Advice:
     """Speed sensor first (the velocity loop runs on it), then the position loop."""
     g = lambda k: gains.get(k)  # noqa: E731
+    if tacho_mode_off(mode, gains, adv):
+        return adv
     sensor_bad = False
     adv.findings.append("שלב 1: חיישן המהירות (טאכו) מול האנקודר")
     tm = an.tacho
