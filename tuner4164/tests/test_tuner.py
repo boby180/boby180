@@ -725,3 +725,13 @@ def test_real_offset_still_comes_before_ag():
                       top_speed=20000, ok=True)
     adv = advise("PIV", "full", gains, Analysis(tacho=tm))
     assert adv.primary.param == "AS"
+
+
+def test_start_of_a_move_is_not_standstill():
+    """Y axis: the encoder had not moved yet but the controller already commanded speed - the tacho read 154."""
+    from tune4164.analysis import tacho_metrics
+    t = np.arange(0, 10, 0.003)
+    vref = np.where(t > 4.0, 2000.0, 0.0)
+    vel = np.where(t > 4.7, 2000.0, 0.0)                         # backlash: the load starts 0.7 s later
+    tacho = np.where(t > 4.0, 2000.0, 1.0)                       # the motor (tacho) moves at once
+    assert abs(tacho_metrics(vel, tacho, t=t, vref=vref).still_offset - 1.0) < 0.1

@@ -590,13 +590,13 @@ class MainWindow(QMainWindow):
                 an.move = move_metrics(t, pe, moving, vref=vref, pos=act, cmd=cmd, tr=win,
                                        settle_limit=self.req_settle.value(), window_from_tr=self.req_win.value() == 0)
         if test == "full" and vel is not None and tacho is not None:
-            an.tacho = tacho_metrics(vel, tacho, t=t)
+            an.tacho = tacho_metrics(vel, tacho, t=t, vref=vref)
         if test == "tacho":
             if vel is None and act is not None:
                 vel = np.gradient(act, t)
                 an.warnings.append("אין עמודת מהירות. המהירות חושבה מהמיקום (ספירות לשנייה).")
             if vel is not None and tacho is not None:
-                an.tacho = tacho_metrics(vel, tacho, t=t)
+                an.tacho = tacho_metrics(vel, tacho, t=t, vref=vref)
         elif test == "velocity_step":
             if self.derive.isChecked():
                 dt = np.gradient(t)

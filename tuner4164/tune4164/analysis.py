@@ -325,10 +325,15 @@ def move_metrics(t: np.ndarray, pe: np.ndarray, moving: np.ndarray | None = None
     return m
 
 
-def _standstill(t: np.ndarray, v: np.ndarray, min_len: float = 0.5, settle: float = 0.3) -> np.ndarray:
+def _standstill(t: np.ndarray, v: np.ndarray, min_len: float = 0.5, settle: float = 0.3,
+                vref: np.ndarray | None = None) -> np.ndarray:
     """Real standstill only: runs where the speed stays at ~0 for at least 'min_len' s, without their first
     'settle' s (right after a stop the tacho is still coming down, and that is not an offset)."""
     still = np.abs(v) <= 0.005 * (np.max(np.abs(v)) + 1e-12)
+    if vref is not None and len(vref) >= len(v):
+        # the encoder may not have moved yet while the motor (and the tacho on it) already turns - e.g. taking up
+        # backlash at the start of a move: that is not standstill
+        still &= np.abs(vref[:len(v)]) <= 0.005 * (np.max(np.abs(v)) + 1e-12)
     out = np.zeros(len(v), dtype=bool)
     edges = np.flatnonzero(np.diff(np.concatenate(([0], still.astype(int), [0]))))
     for a, b in zip(edges[::2], edges[1::2]):
@@ -337,7 +342,8 @@ def _standstill(t: np.ndarray, v: np.ndarray, min_len: float = 0.5, settle: floa
     return out
 
 
-def tacho_metrics(vel: np.ndarray, tacho: np.ndarray, max_lag: int = 40, t: np.ndarray | None = None) -> TachoMetrics:
+def tacho_metrics(vel: np.ndarray, tacho: np.ndarray, max_lag: int = 40, t: np.ndarray | None = None,
+                  vref: np.ndarray | None = None) -> TachoMetrics:
     m = TachoMetrics()
     n = min(len(vel), len(tacho))
     if n < 50 or np.std(vel[:n]) == 0:
@@ -350,7 +356,7 @@ def tacho_metrics(vel: np.ndarray, tacho: np.ndarray, max_lag: int = 40, t: np.n
     m.residual_pct = float(np.std(res) / (np.std(a) + 1e-12) * 100)
     m.offset_pct = float(abs(m.offset) / (abs(m.gain) * np.max(np.abs(v)) + 1e-12) * 100)
     tt = t[:n].astype(float) if t is not None and len(t) >= n else np.arange(n) * 0.003
-    still = _standstill(tt, v)
+    still = _standstill(tt, v, vref=None if vref is None else np.asarray(vref, dtype=float))
     m.still_samples = int(still.sum())
     if m.still_samples >= 20:
         m.still_offset = float(np.mean(a[still]))
