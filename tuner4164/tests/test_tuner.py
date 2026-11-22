@@ -661,7 +661,7 @@ def test_offline_help_finds_the_right_topic():
              "מה ההבדל בין KI[2] ל-KI[3]": "sets", "הטאכו לא מסומן": "tacho_mode", "הציר נתקע ליד המטרה": "friction",
              "איך לדעת אם הרעידה מכנית": "mechanical", "הוא מחזיר אותי לערכים שהיו": "loop",
              "איך שומרים בבקר": "save", "זמזום בפקודה": "noise", "מסובב חדש": "rotators", "AG": "tacho_gain",
-             "מתי מפסיקים לכייל": "spec"}
+             "מתי מפסיקים לכייל": "spec", "איך בודקים בקלש": "backlash"}
     for q, tid in cases.items():
         assert search(q)[0].id == tid, q
     assert search("xyzzy") == []
@@ -735,3 +735,39 @@ def test_start_of_a_move_is_not_standstill():
     vel = np.where(t > 4.7, 2000.0, 0.0)                         # backlash: the load starts 0.7 s later
     tacho = np.where(t > 4.0, 2000.0, 1.0)                       # the motor (tacho) moves at once
     assert abs(tacho_metrics(vel, tacho, t=t, vref=vref).still_offset - 1.0) < 0.1
+
+
+def _back_and_forth(backlash_counts):
+    """Moves +, then - (reversal), then + again; the load starts only after the motor took up the backlash."""
+    t = np.arange(0, 12, 0.003)
+    vref = np.select([(t > 1) & (t < 3), (t > 5) & (t < 7), (t > 9) & (t < 11)], [1000.0, -1000.0, 1000.0], 0.0)
+    motor = vref.copy()                                       # the tacho follows the command at once
+    load_v = np.zeros_like(t)
+    taken, direction = backlash_counts, 1.0                   # start already engaged in + direction
+    dt = 0.003
+    for i in range(1, len(t)):
+        d = np.sign(motor[i])
+        if d and d != direction:
+            direction, taken = d, 0.0
+        if d:
+            if taken < backlash_counts:
+                taken += abs(motor[i]) * dt
+            else:
+                load_v[i] = motor[i]
+    pos = np.cumsum(load_v) * dt
+    return t, pos, motor, vref
+
+
+def test_backlash_is_measured_at_reversals_and_alerts_above_the_limit():
+    from tune4164.advise import Advice, apply_backlash
+    from tune4164.analysis import backlash_metrics
+    cpd = 4551.1111
+    t, pos, tacho, vref = _back_and_forth(0.1 * cpd)          # 0.1 degree of backlash
+    bl = backlash_metrics(t, pos, tacho, ratio=1.0, vref=vref, counts_per_deg=cpd)
+    assert len(bl.travels) == 2 and abs(bl.deg(bl.mean) - 0.1) < 0.01
+    adv = Advice()
+    apply_backlash(adv, bl, 0.05)
+    assert adv.warnings[0].startswith("משחק גדול מהמותר")
+    adv = Advice()
+    apply_backlash(adv, bl, 0.2)
+    assert not adv.warnings and any("backlash" in f for f in adv.findings)

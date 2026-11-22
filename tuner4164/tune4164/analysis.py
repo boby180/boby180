@@ -86,11 +86,36 @@ class TachoMetrics:
 
 
 @dataclass
+class BacklashMetrics:
+    """Backlash between the motor (tacho) and the load (encoder): at each change of direction, how far the
+    motor turns before the load moves. Counts are encoder counts (the tacho scaled by Veldt / AnlgInp)."""
+    travels: list = field(default_factory=list)    # one per direction reversal, in counts
+    times: list = field(default_factory=list)      # when each reversal started [s]
+    counts_per_deg: float | None = None
+
+    @property
+    def ok(self) -> bool:
+        return bool(self.travels)
+
+    def deg(self, counts: float) -> float | None:
+        return counts / self.counts_per_deg if self.counts_per_deg else None
+
+    @property
+    def mean(self) -> float:
+        return float(np.mean(self.travels)) if self.travels else 0.0
+
+    @property
+    def max(self) -> float:
+        return float(np.max(self.travels)) if self.travels else 0.0
+
+
+@dataclass
 class Analysis:
     tacho: TachoMetrics | None = None
     step: StepMetrics | None = None
     move: MoveMetrics | None = None
     command: CommandMetrics | None = None
+    backlash: BacklashMetrics | None = None
     warnings: list[str] = field(default_factory=list)
 
 
@@ -389,4 +414,48 @@ def command_metrics(cmd: np.ndarray, limit: float | None = None) -> CommandMetri
     span = float(np.percentile(a, 95)) + 1e-9
     m.noise_ratio = float(np.std(np.diff(cmd)) / span)
     m.ok = True
+    return m
+
+
+def backlash_metrics(t: np.ndarray, pos: np.ndarray, tacho: np.ndarray, ratio: float, offset: float = 0.0,
+                     vref: np.ndarray | None = None, counts_per_deg: float | None = None,
+                     idle: float = 0.2, move_counts: float = 2.0, max_wait: float = 2.0) -> BacklashMetrics:
+    """At every start of motion that reverses the previous direction: integrate the motor speed (tacho, in encoder
+    counts/s) from the start of the command until the encoder has moved 'move_counts' counts."""
+    m = BacklashMetrics(counts_per_deg=counts_per_deg)
+    n = min(len(t), len(pos), len(tacho))
+    if n < 50 or not ratio:
+        return m
+    t, pos = t[:n].astype(float), pos[:n].astype(float)
+    sp = (tacho[:n].astype(float) - offset) * ratio
+    top = float(np.max(np.abs(sp))) or 1.0
+    if vref is not None and len(vref) >= n:
+        vr = vref[:n].astype(float)
+        cmd = np.abs(vr) > 0.002 * (np.max(np.abs(vr)) or 1.0)
+        direction = np.sign(vr)
+    else:
+        cmd = np.abs(sp) > 0.02 * top
+        direction = np.sign(sp)
+    dt = float(np.median(np.diff(t))) or 1e-3
+    edges = np.flatnonzero(np.diff(cmd.astype(int)) == 1) + 1
+    last_dir = 0.0
+    prev_end = None
+    for s in edges:
+        before = np.flatnonzero(cmd[:s])
+        if len(before):
+            prev_end = before[-1]
+            last_dir = float(np.sign(np.mean(direction[max(0, prev_end - 20):prev_end + 1])))
+        if prev_end is None or t[s] - t[prev_end] < idle:
+            continue                                   # not a fresh start after a stop
+        ahead = np.flatnonzero(cmd[s:s + int(0.5 / dt) + 1])
+        now = float(np.sign(np.mean(direction[s:s + max(5, len(ahead))])))
+        if not last_dir or now == last_dir:
+            continue                                   # backlash shows only when the direction reverses
+        moved = np.flatnonzero(np.abs(pos[s:] - pos[s]) >= move_counts)
+        if not len(moved) or t[s + moved[0]] - t[s] > max_wait:
+            continue
+        e = s + int(moved[0])
+        travel = abs(float(np.sum(sp[s:e])) * dt)
+        m.travels.append(travel)
+        m.times.append(float(t[s]))
     return m

@@ -21,12 +21,12 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .advise import SET_NAMES, TESTS, Advice, advise
+from .advise import BACKLASH_LIMIT_DEG, SET_NAMES, TESTS, Advice, advise, apply_backlash
 from .loopguard import best_run, guard
 from . import help as helpkb
 from .history import (History, advice_fields, compare, extract_run, fingerprint, load_run, make_entry, other_unit,
                       run_document, step_back)
-from .analysis import Analysis, command_metrics, move_metrics, moving_from_velocity, step_metrics, tacho_metrics
+from .analysis import Analysis, backlash_metrics, command_metrics, move_metrics, moving_from_velocity, step_metrics, tacho_metrics
 from .prm import AXES, TUNING_KEYS, PrmFile, load_prm, parse_prm, prm_text
 from .recording import SAMPLE_TIME_4M, Recording, load_recording
 from .version import __version__
@@ -257,6 +257,15 @@ class MainWindow(QMainWindow):
         self.req_settle.valueChanged.connect(self._req_changed)
         form.addRow("חלון שגיאה מותר:", self.req_win)
         form.addRow("זמן כניסה לחלון אחרי עצירה:", self.req_settle)
+        self.req_backlash = QDoubleSpinBox()
+        self.req_backlash.setRange(0.001, 5.0)
+        self.req_backlash.setDecimals(3)
+        self.req_backlash.setSingleStep(0.005)
+        self.req_backlash.setValue(BACKLASH_LIMIT_DEG)
+        self.req_backlash.setSuffix("°")
+        self.req_backlash.setToolTip("משחק גדול מזה (בהיפוכי כיוון) מקבל התראה. נשמר לכל מסובב וציר.")
+        self.req_backlash.valueChanged.connect(self._req_changed)
+        form.addRow("משחק (backlash) מותר:", self.req_backlash)
         lay.addWidget(setup)
 
         cols_box = QGroupBox("עמודות בהקלטה")
@@ -506,6 +515,7 @@ class MainWindow(QMainWindow):
             key = f"{self.unit.currentText()}/{self.axis.currentText()}"
             self.prefs.setValue(f"req_win/{key}", self.req_win.value())
             self.prefs.setValue(f"req_settle/{key}", self.req_settle.value())
+            self.prefs.setValue(f"req_backlash/{key}", self.req_backlash.value())
 
     def _offset_ok_toggled(self, on: bool) -> None:
         if hasattr(self, "unit"):
@@ -520,6 +530,7 @@ class MainWindow(QMainWindow):
             self._loading_req = True
             self.req_win.setValue(int(self.prefs.value(f"req_win/{key}", 0) or 0))
             self.req_settle.setValue(float(self.prefs.value(f"req_settle/{key}", 0.3) or 0.3))
+            self.req_backlash.setValue(float(self.prefs.value(f"req_backlash/{key}", BACKLASH_LIMIT_DEG) or BACKLASH_LIMIT_DEG))
             self._loading_req = False
         mode = self.prm.mode(axis)
         if mode:
@@ -613,7 +624,12 @@ class MainWindow(QMainWindow):
             an.tacho.still_offset = None
         if cmd is not None:
             an.command = command_metrics(cmd, gains.get("TL") or None)
+        if an.tacho is not None and an.tacho.ok and act is not None and tacho is not None:
+            pa43 = self.prm.get(self.axis.currentText(), "PA[43]")
+            an.backlash = backlash_metrics(t, act, tacho, an.tacho.ratio, an.tacho.still_offset or 0.0, vref=vref,
+                                           counts_per_deg=pa43 / 10000 if pa43 else None)
         self.advice = advise(self.mode.currentText(), test, gains, an)
+        apply_backlash(self.advice, an.backlash, self.req_backlash.value())
         if remember:
             self._remember(test, gains, an, vref, vel)
         else:
@@ -1222,7 +1238,7 @@ class MainWindow(QMainWindow):
                          + "".join(f"<li>{html.escape(m)}</li>" for m in missing)
                          + "</ul><p>ראה את ההסבר בכחול למעלה, או לחץ \"הסבר מלא: איזו הקלטה לעשות\".</p></div>")
         for w in a.warnings:
-            if w.startswith("חיישן המהירות (הטאכו) לא מכויל") or w.startswith("מצב טאכו כבוי"):
+            if w.startswith(("חיישן המהירות (הטאכו) לא מכויל", "מצב טאכו כבוי", "משחק גדול מהמותר")):
                 parts.append("<div style='background:#fdecec; border:2px solid #c62f2f; padding:8px;'>"
                              f"<p style='color:#a11d1d; font-size:12pt'><b>⚠ {html.escape(w)}</b></p></div>")
             else:
