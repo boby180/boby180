@@ -40,41 +40,14 @@ ROLE_LABELS = [("time", "זמן"), ("reference", "רצוי (Desired)"), ("actual
                ("velocity", "מהירות מהאנקודר"), ("velocity_ref", "מהירות רצויה"),
                ("tacho", "חיישן מהירות / כניסה אנלוגית")]
 GUIDE_SHORT = (
-    "<b>איזו הקלטה לעשות ב-SC-Shell כדי לקבל המלצות ל-KP / KI / KD:</b> "
-    "בתיקיית Data Recording בוחרים לאותו ציר: "
+    "<b>ההקלטה הסטנדרטית ב-SC-Shell:</b> "
     "<b>RV[1] = Position Error</b>, <b>RV[2] = Desired Position</b>, <b>RV[3] = Position</b>, "
-    "<b>RV[4] = Driver Command</b>, <b>RV[5] = Analog Input</b> (חיישן המהירות, נבדק ראשון). "
-    "מקליטים <b>תנועה רגילה</b> ו<b>תנועה קטנה (0.5°-1°)</b>, וממשיכים להקליט <b>כשנייה אחרי שהציר עוצר</b>. "
-    "שומרים כקובץ SDV ופותחים כאן."
+    "<b>RV[4] = Driver Command</b>, <b>RV[5] = Analog Input</b>, <b>RG=50, RL=10000</b>. "
+    "תנועה חוזרת של <b>15°</b> (MM=0, SM=1), <b>45% מהמהירות המרבית</b>, תאוצה של רבע שנייה, "
+    "<b>עמידה של 2 שניות</b> (WT=32768), <b>4 תנועות</b> ואז KR. "
+    "הכפתור משמאל מחשב את המספרים לציר שלך ומעתיק את הפקודות."
 )
-GUIDE_FULL = """
-<h3>איזו הקלטה לעשות</h3>
-<p>כדי לשפוט את הכיול צריך לראות <b>מה הבקר ביקש</b> מול <b>מה הציר עשה</b>. הקלטה של מהירות מהאנקודר וחיישן
-מהירות בלבד (למשל XVel ו-XAnlgInp) בודקת רק את חיישן המהירות, לא את KP / KI / KD.</p>
-<h4>1. ב-SC-Shell, תיקיית Data Recording, לאותו ציר:</h4>
-<table border="1" cellpadding="4" cellspacing="0">
-<tr><th>וקטור</th><th>לבחור</th><th>למה</th></tr>
-<tr><td>RV[1]</td><td><b>Position Error</b></td><td>הכי חשוב: כמה הציר מפגר ואיך הוא מתייצב</td></tr>
-<tr><td>RV[2]</td><td><b>Desired Position</b></td><td>מה הבקר ביקש, מתי התנועה מתחילה ונגמרת</td></tr>
-<tr><td>RV[3]</td><td><b>Position</b></td><td>מה הציר עשה בפועל</td></tr>
-<tr><td>RV[4]</td><td><b>Driver Command</b></td><td>הפקודה למנוע: רוויה ורעש (למשל KD גבוה מדי)</td></tr>
-<tr><td>RV[5]</td><td><b>Analog Input</b></td><td>חיישן המהירות (Tacho). נבדק ראשון: לולאת המהירות עובדת לפיו</td></tr>
-</table>
-<h4>2. אילו תנועות להקליט</h4>
-<ul>
-<li><b>תנועה רגילה לנקודה</b> במהירות ובתאוצה הרגילות של המכונה. בתוכנה: "תנועה רגילה לנקודה (PTP)".</li>
-<li><b>תנועה קטנה</b> של 0.5° עד 1°. כאן רואים הכי טוב חריגה ותנודות. בתוכנה: "צעד מיקום קטן".</li>
-<li>להמשיך להקליט <b>כחצי שנייה עד שנייה אחרי שהציר עוצר</b>, כדי לראות אם הוא רועד או מתייצב.</li>
-</ul>
-<h4>3. אורך ההקלטה (RL ו-RG)</h4>
-<p>משך ההקלטה = RL × RG × 61µs. בוחרים RG כך שההקלטה תכסה את התנועה ועוד שנייה, ולא הרבה יותר.
-לדוגמה: RL=8000 ו-RG=4 נותנים 2 שניות, נקודה כל 0.24ms.</p>
-<h4>4. בדיקה מתקדמת (לפי מדריך היצרן, רק למי שמכיר)</h4>
-<p><b>צעד מהירות עם KP=0</b> לכיול KD ו-KI של לולאת המהירות. בזמן הבדיקה היצרן מגדיל את ER, כלומר ההגנה
-מפני שגיאה גדולה כבויה. מקליטים מהירות רצויה ובפועל ופקודת דרייבר.</p>
-<h4>5. מה לשלוח</h4>
-<p>את קובץ ה-SDV ואת קובץ ה-PRM של המכונה (Upload Controller Parameters).</p>
-"""
+GUIDE_FULL = ""   # built from the loaded PRM: see help.standard_recording
 SAFETY = ("ההמלצות מבוססות על ההקלטה בלבד, ולא מחליפות שיקול דעת. משנים פרמטר אחד בכל פעם, "
           "בודקים במהירות נמוכה עם יד על לחצן החירום, ושומרים בבקר (SV) רק כשמרוצים.")
 
@@ -159,7 +132,7 @@ class MainWindow(QMainWindow):
         self.guide.setWordWrap(True)
         self.guide.setStyleSheet("background:#e6f0fa; border:2px solid #1f6fb3; border-radius:6px; padding:8px;"
                                  " color:#0f2f52; font-size:11pt;")
-        guide_btn = QPushButton("הסבר מלא:\nאיזו הקלטה לעשות")
+        guide_btn = QPushButton("ההקלטה הסטנדרטית:\nמספרים ופקודות לציר")
         guide_btn.setStyleSheet("QPushButton { background:#1f6fb3; color:white; font-weight:bold; padding:8px 14px;"
                                 " border-radius:6px; }")
         guide_btn.clicked.connect(self.show_guide)
@@ -1201,17 +1174,22 @@ class MainWindow(QMainWindow):
             self.plot2.setTitle("שגיאת מיקום")
 
     def show_guide(self) -> None:
+        axis = self.axis.currentText()
+        text, main, _ = helpkb.standard_recording(axis, self.prm.get(axis, "PA[43]"), self.prm.get(axis, "PA[52]"))
         dlg = QDialog(self)
-        dlg.setWindowTitle("איזו הקלטה לעשות")
-        dlg.setLayoutDirection(Qt.RightToLeft)
+        dlg.setWindowTitle(f"ההקלטה הסטנדרטית, ציר {axis}")
+        dlg.resize(820, 760)
         lay = QVBoxLayout(dlg)
-        text = QTextBrowser()
-        text.setHtml(GUIDE_FULL)
-        lay.addWidget(text)
-        buttons = QDialogButtonBox(QDialogButtonBox.Close)
-        buttons.rejected.connect(dlg.reject)
-        lay.addWidget(buttons)
-        dlg.resize(760, 640)
+        tb = QTextBrowser()
+        tb.setHtml(text)
+        lay.addWidget(tb)
+        bb = QDialogButtonBox(QDialogButtonBox.Close)
+        bb.button(QDialogButtonBox.Close).setText("סגור")
+        copy = bb.addButton("העתק את הפקודות", QDialogButtonBox.ActionRole)
+        copy.clicked.connect(lambda: (QApplication.clipboard().setText(main.split("\n'")[0]),
+                                      self.statusBar().showMessage("הפקודות הועתקו", 4000)))
+        bb.rejected.connect(dlg.reject)
+        lay.addWidget(bb)
         dlg.exec()
 
     def _missing_for_tuning(self) -> list[str]:
@@ -1236,7 +1214,7 @@ class MainWindow(QMainWindow):
             parts.append("<div style='background:#e6f0fa; border:2px solid #1f6fb3; padding:8px;'>"
                          "<p style='font-size:12pt'><b>כדי לקבל המלצות ל-KP / KI / KD חסרים בהקלטה הזו:</b></p><ul>"
                          + "".join(f"<li>{html.escape(m)}</li>" for m in missing)
-                         + "</ul><p>ראה את ההסבר בכחול למעלה, או לחץ \"הסבר מלא: איזו הקלטה לעשות\".</p></div>")
+                         + "</ul><p>ראה את ההסבר בכחול למעלה, או לחץ \"ההקלטה הסטנדרטית\".</p></div>")
         for w in a.warnings:
             if w.startswith(("חיישן המהירות (הטאכו) לא מכויל", "מצב טאכו כבוי", "משחק גדול מהמותר")):
                 parts.append("<div style='background:#fdecec; border:2px solid #c62f2f; padding:8px;'>"

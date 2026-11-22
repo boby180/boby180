@@ -365,3 +365,78 @@ HEADER_TIPS = {
     "AF": "מעריך ההגבר. נשאר כמו שהוא, יורד רק כש-AG יוצא מהטווח.",
     "CG": "הגדרות הציר בביטים: ביט 3 = PID, ביט 6 = מצב טאכו, ביט 7 = Dual Loop.",
 }
+
+
+# ---------- the standard recording ----------
+STD_DEG = 15.0           # each move
+STD_SPEED_FRAC = 0.45    # of the top speed (PA[52])
+STD_ACC_TIME = 0.25      # s to reach the speed: AC = DC = 4 x SP
+STD_DWELL = 2.0          # s at each stop
+SAMPLE_S = 61.035e-6     # one controller sample (SC-AT-4M / NT-4M)
+STD_RG, STD_RL = 50, 10000
+BL_DEG, BL_DWELL, BL_RG, BL_RL = 1.0, 1.0, 20, 20000
+DEFAULT_CPD, DEFAULT_TOP = 4551.1111, 54613.0   # PA[43]/10000 and |PA[52]| of the rotators seen so far
+
+
+def standard_recording(axis: str = "X", pa43: int | None = None, pa52: int | None = None) -> tuple[str, str, str]:
+    """The standard recording for one axis, from its PA[43] (counts/degree x 10000) and PA[52] (top speed).
+    Returns (html, main commands, backlash commands)."""
+    cpd = pa43 / 10000 if pa43 else DEFAULT_CPD
+    top = abs(pa52) if pa52 else DEFAULT_TOP
+    sp = int(round(STD_SPEED_FRAC * top, -3 if top >= 20000 else -2))     # round numbers: 25000, 100000, 68000
+    ac = int(round(sp / STD_ACC_TIME, -3))
+    rp = int(round(STD_DEG * cpd, -3 if STD_DEG * cpd >= 10000 else 0))
+    wt = int(round(STD_DWELL / SAMPLE_S))
+    cruise = (rp - sp * sp / ac) / sp
+    rec_s = STD_RL * STD_RG * SAMPLE_S
+    bl_sp = int(round(0.44 * cpd, -2)) or 100
+    bl_ac = bl_sp * 5
+    bl_rp = int(round(BL_DEG * cpd))
+    bl_wt = int(round(BL_DWELL / SAMPLE_S))
+    bl_s = BL_RL * BL_RG * SAMPLE_S
+    a = axis
+    main = (f"{a}MM=0;{a}SM=1;{a}SP={sp};{a}AC={ac};{a}DC={ac};{a}WT={wt}\n{a}RP={rp}\n"
+            f"' start the recording, then: {a}BG   ... after 4 moves: {a}KR")
+    blc = (f"{a}MM=0;{a}SM=1;{a}SP={bl_sp};{a}AC={bl_ac};{a}DC={bl_ac};{a}WT={bl_wt}\n{a}RP={bl_rp}\n"
+           f"' start the recording, then: {a}BG   ... after 6 moves: {a}KR")
+    src = ("לפי ה-PRM הטעון" if pa43 and pa52 else
+           "לפי ערכי ברירת מחדל (4551 ספירות למעלה, מהירות מרבית 54613): טען PRM כדי לחשב לציר שלך")
+    html_ = f"""
+<h3>הקלטה סטנדרטית, ציר {a} ({src})</h3>
+<p>הקלטה אחת לכל הבדיקות: מצב טאכו, אופסט, הגבר הטאכו, רעידות, עצירה מול TR ומשחק. בכל הקלטות הכיול של אותו מסובב
+משתמשים <b>באותם מספרים בדיוק</b>, כדי שההשוואה תהיה אמינה.</p>
+<h4>1. ערוצים (Data Recording)</h4>
+<table border="1" cellpadding="4" cellspacing="0">
+<tr><td>RV[1]</td><td><b>Position Error</b></td></tr><tr><td>RV[2]</td><td><b>Desired Position</b></td></tr>
+<tr><td>RV[3]</td><td><b>Position</b></td></tr><tr><td>RV[4]</td><td><b>Driver Command</b></td></tr>
+<tr><td>RV[5]</td><td><b>Analog Input</b></td></tr>
+<tr><td>RG</td><td><b>{STD_RG}</b> (דגימה כל {STD_RG * SAMPLE_S * 1000:.1f}ms)</td></tr>
+<tr><td>RL</td><td><b>{STD_RL}</b> (כ-{rec_s:.0f} שניות)</td></tr></table>
+<h4>2. התנועה: מצב חוזר, 4 תנועות (3 היפוכי כיוון)</h4>
+<table border="1" cellpadding="4" cellspacing="0">
+<tr><th>פרמטר</th><th>ערך</th><th>במעלות</th></tr>
+<tr><td>MM / SM</td><td>0 / 1 (PTP חוזר)</td><td></td></tr>
+<tr><td>RP</td><td><b>{rp}</b></td><td>{STD_DEG:g}° (מנקודת ההתחלה והלוך-חזור)</td></tr>
+<tr><td>SP</td><td><b>{sp}</b></td><td>{sp / cpd:.1f}°/s ({STD_SPEED_FRAC * 100:.0f}% מהמרבית)</td></tr>
+<tr><td>AC = DC</td><td><b>{ac}</b></td><td>{ac / cpd:.0f}°/s² (תאוצה של {STD_ACC_TIME:g} שניות)</td></tr>
+<tr><td>WT</td><td><b>{wt}</b></td><td>{STD_DWELL:g} שניות עמידה (WT בדגימות של 61µs)</td></tr></table>
+<p>כ-{cruise:.1f} שניות במהירות קבועה בכל תנועה. 4 תנועות לוקחות כ-{4 * (cruise + 2 * STD_ACC_TIME + STD_DWELL):.0f} שניות.</p>
+<h4>3. סדר הפעולות</h4><ol>
+<li>בודקים שיש {STD_DEG:g}° פנויות בכיוון החיובי מהנקודה הנוכחית (HL / LL).</li>
+<li>שולחים את הפקודות (הכפתור מעתיק אותן), מתחילים את ההקלטה, ואז <b>{a}BG</b>.</li>
+<li>אחרי 4 תנועות שולחים <b>{a}KR</b> (סוף המצב החוזר). ההקלטה צריכה להימשך לפחות שנייה אחרי העצירה האחרונה.</li>
+<li>בהקלטה ראשונה של מסובב חדש, או אחרי שינוי AG גדול: חצי מהירות (SP={sp // 2}), יד על לחצן החירום.</li>
+<li>שומרים SDV, ומעלים יחד עם ה-PRM של הבקר.</li></ol>
+<pre>{html.escape(main)}</pre>
+<h4>4. רק אם יש חשד למשחק: תנועות קטנות ואיטיות</h4>
+<p>RP=<b>{bl_rp}</b> ({BL_DEG:g}°), SP=<b>{bl_sp}</b> ({bl_sp / cpd:.2f}°/s), AC=DC=<b>{bl_ac}</b>, WT=<b>{bl_wt}</b>
+({BL_DWELL:g} שנייה), RG=<b>{BL_RG}</b>, RL=<b>{BL_RL}</b> (כ-{bl_s:.0f} שניות, כ-6 תנועות).</p>
+<pre>{html.escape(blc)}</pre>
+<p style='color:#5d6b7a'>אחרי הבדיקה אפשר להחזיר את SM, WT, SP ו-AC לערכים שב-PRM.</p>"""
+    return html_, main, blc
+
+
+TOPICS.append(T("standard", "ההקלטה הסטנדרטית: מספרים ופקודות", "תהליך",
+                "הקלטה סטנדרטית סטנדרט מספרים פקודות wt rp sp ac rg rl כמה מעלות תאוצה מצב חוזר sm kr",
+                standard_recording()[0]))
+_INDEX["standard"] = _index(TOPICS[-1])

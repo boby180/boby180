@@ -771,3 +771,13 @@ def test_backlash_is_measured_at_reversals_and_alerts_above_the_limit():
     adv = Advice()
     apply_backlash(adv, bl, 0.2)
     assert not adv.warnings and any("backlash" in f for f in adv.findings)
+
+
+def test_standard_recording_numbers():
+    from tune4164.help import search, standard_recording
+    _, main, bl = standard_recording("Y", 45511111, -54613)
+    assert "YSP=25000;YAC=100000;YDC=100000;YWT=32768" in main and "YRP=68000" in main
+    assert "YRP=4551" in bl and "YWT=16384" in bl
+    _, other, _ = standard_recording("X", 8000000, -7200)        # another rotator: 800 counts/degree
+    assert "XRP=12000" in other and "XSP=3200" in other
+    assert search("כמה מעלות לנסוע בהקלטה")[0].id == "standard"
