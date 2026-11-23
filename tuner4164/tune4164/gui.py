@@ -602,7 +602,7 @@ class MainWindow(QMainWindow):
         if an.tacho is not None and an.tacho.ok and act is not None and tacho is not None:
             pa43 = self.prm.get(self.axis.currentText(), "PA[43]")
             an.backlash = backlash_metrics(t, act, tacho, an.tacho.ratio, an.tacho.still_offset or 0.0, vref=vref,
-                                           counts_per_deg=pa43 / 10000 if pa43 else None)
+                                           counts_per_deg=pa43 / 10000 if pa43 else None, cmd=cmd, vel=vel)
         self.advice = advise(self.mode.currentText(), test, gains, an)
         apply_backlash(self.advice, an.backlash, self.req_backlash.value())
         if remember:

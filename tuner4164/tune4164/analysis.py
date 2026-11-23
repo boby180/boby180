@@ -419,9 +419,17 @@ def command_metrics(cmd: np.ndarray, limit: float | None = None) -> CommandMetri
 
 def backlash_metrics(t: np.ndarray, pos: np.ndarray, tacho: np.ndarray, ratio: float, offset: float = 0.0,
                      vref: np.ndarray | None = None, counts_per_deg: float | None = None,
-                     idle: float = 0.2, move_counts: float = 2.0, max_wait: float = 2.0) -> BacklashMetrics:
-    """At every start of motion that reverses the previous direction: integrate the motor speed (tacho, in encoder
-    counts/s) from the start of the command until the encoder has moved 'move_counts' counts."""
+                     idle: float = 0.2, move_counts: float = 2.0, max_wait: float = 2.0,
+                     cmd: np.ndarray | None = None, vel: np.ndarray | None = None) -> BacklashMetrics:
+    """Backlash (lost motion) between the motor (tacho) and the load (encoder).
+
+    With the driver command: at every torque reversal (the command changes sign) the gear teeth change flanks, and
+    for a moment the motor turns while the load does not. That extra motor travel is the integral of
+    (motor speed - load speed) over a short window, after taking off the bias measured just before it. The flanks
+    usually change during the deceleration (the motor brakes), not at the start of the next move.
+    Without the command: fall back to the start of each reversed move."""
+    if cmd is not None and vel is not None:
+        return _backlash_by_torque(t, tacho, ratio, offset, cmd, vel, counts_per_deg)
     m = BacklashMetrics(counts_per_deg=counts_per_deg)
     n = min(len(t), len(pos), len(tacho))
     if n < 50 or not ratio:
@@ -458,4 +466,30 @@ def backlash_metrics(t: np.ndarray, pos: np.ndarray, tacho: np.ndarray, ratio: f
         travel = abs(float(np.sum(sp[s:e])) * dt)
         m.travels.append(travel)
         m.times.append(float(t[s]))
+    return m
+
+
+def _backlash_by_torque(t, tacho, ratio, offset, cmd, vel, counts_per_deg, pre=0.3, before=0.05, after=0.30,
+                        level=0.1) -> BacklashMetrics:
+    m = BacklashMetrics(counts_per_deg=counts_per_deg)
+    n = min(len(t), len(tacho), len(cmd), len(vel))
+    if n < 100 or not ratio:
+        return m
+    t = t[:n].astype(float)
+    r = (tacho[:n].astype(float) - offset) * ratio - vel[:n].astype(float)      # motor speed - load speed
+    c = cmd[:n].astype(float)
+    lvl = level * (np.percentile(np.abs(c), 95) or 1.0)
+    sign = np.where(c > lvl, 1, np.where(c < -lvl, -1, 0))
+    dt = float(np.median(np.diff(t))) or 1e-3
+    last, last_i, last_event = 0, 0, -1e9
+    for i in np.flatnonzero(sign):
+        if last and sign[i] != last:
+            t0 = t[last_i]                                   # the command was last clearly on the old side here
+            a, b, e = np.searchsorted(t, [t0 - pre, t0 - before, t0 + after])
+            if 0 < a < b < e < n and t0 - last_event > pre + after:
+                bias = float(np.mean(r[a:b]))
+                m.travels.append(abs(float(np.sum(r[b:e] - bias)) * dt))
+                m.times.append(float(t0))
+                last_event = t0
+        last, last_i = sign[i], i
     return m

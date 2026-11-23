@@ -781,3 +781,18 @@ def test_standard_recording_numbers():
     _, other, _ = standard_recording("X", 8000000, -7200)        # another rotator: 800 counts/degree
     assert "XRP=12000" in other and "XSP=3200" in other
     assert search("כמה מעלות לנסוע בהקלטה")[0].id == "standard"
+
+
+def test_backlash_at_torque_reversal_during_deceleration():
+    """y-bk: the flanks change while braking (the command changes sign), not at the start of the next move."""
+    from tune4164.analysis import backlash_metrics
+    t = np.arange(0, 8, 0.003)
+    vel = np.where((t > 1) & (t < 3), 20000.0, np.where((t > 4) & (t < 6), -20000.0, 0.0))
+    cmd = np.where((t > 1) & (t < 2.7), 1500.0, np.where((t >= 2.7) & (t < 4.0), -400.0,
+                   np.where((t > 4) & (t < 5.7), -1500.0, 400.0)))      # brakes at 2.7 s and 5.7 s
+    tacho = vel.copy()
+    for t0 in (2.7, 5.7):                                               # 65 counts of motor-only travel
+        k = (t >= t0) & (t < t0 + 0.05)
+        tacho[k] += np.sign(-cmd[np.searchsorted(t, t0) - 5]) * 65 / 0.05
+    bl = backlash_metrics(t, np.zeros_like(t), tacho, ratio=1.0, cmd=cmd, vel=vel, counts_per_deg=4551.1111)
+    assert len(bl.travels) >= 2 and abs(bl.max - 65) < 5 and abs(bl.deg(bl.max) - 0.0143) < 0.002
