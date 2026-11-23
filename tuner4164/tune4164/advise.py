@@ -544,13 +544,14 @@ def apply_backlash(adv: Advice, bl, limit_deg: float = BACKLASH_LIMIT_DEG) -> No
     n = len(bl.travels)
     if bl.counts_per_deg:
         mean_d, max_d = bl.deg(bl.mean), bl.deg(bl.max)
-        adv.findings.append(f"משחק (backlash) בין המנוע לעומס: {mean_d:.4f}° בממוצע ({bl.mean:.0f} ספירות, "
-                            f"{mean_d * 60:.2f} דקות-קשת), הכי גדול {max_d:.4f}°, מתוך {n} היפוכי כיוון. מותר {limit_deg:g}°.")
+        mark = "✘" if max_d > limit_deg else "✔"
+        adv.findings.insert(0, f"{mark} משחק (backlash) בין המנוע לעומס: {mean_d:.4f}° בממוצע ({bl.mean:.0f} ספירות, "
+                               f"{mean_d * 60:.2f} דקות-קשת), הכי גדול {max_d:.4f}°, מתוך {n} היפוכי כיוון. מותר {limit_deg:g}°.")
         if max_d > limit_deg:
             adv.warnings.insert(0, f"{BACKLASH_ALERT}: נמדד {max_d:.4f}° (מותר {limit_deg:g}°). זו בעיה מכנית (תמסורת, גיר, צימוד): "
                                    "הגברים לא יתקנו אותה, ומשחק גדול גורם לרעידות ולחיכוך ליד המטרה. בודקים את המכניקה.")
     else:
-        adv.findings.append(f"משחק (backlash): {bl.mean:.0f} ספירות בממוצע מתוך {n} היפוכי כיוון. כדי להמיר למעלות ולהשוות "
+        adv.findings.insert(0, f"משחק (backlash): {bl.mean:.0f} ספירות בממוצע מתוך {n} היפוכי כיוון. כדי להמיר למעלות ולהשוות "
                             "ל-0.05° צריך PA[43] ב-PRM.")
 
 

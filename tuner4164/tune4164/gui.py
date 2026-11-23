@@ -53,7 +53,7 @@ SAFETY = ("ההמלצות מבוססות על ההקלטה בלבד, ולא מח
 
 
 HIST_COLS = ["זמן", "הקלטה", "מה השתנה מהקודמת", "התייצבות", "זמן תקוע", "שיא אחרי עצירה", "פיגור", "תוצאה",
-             "ההמלצה שניתנה"]
+             "ההמלצה שניתנה", "משחק"]
 
 
 def _fmt_metric(v, unit: str) -> str:
@@ -65,6 +65,8 @@ def _fmt_metric(v, unit: str) -> str:
         return f"{v * 1000:.0f}ms"
     if unit == "%":
         return f"{v:.2f}%"
+    if unit == "°":
+        return f"{v:.4f}°"
     return f"{v:.0f}" if abs(v) >= 10 or float(v).is_integer() else f"{v:.2f}"
 
 
@@ -772,7 +774,8 @@ class MainWindow(QMainWindow):
                      _fmt_metric(m.get("settle"), "s"), _fmt_metric(m.get("stuck_time"), "s"),
                      _fmt_metric(m.get("end_peak"), ""), _fmt_metric(m.get("following"), ""),
                      {"better": "השתפר ✔", "worse": "החמיר ✘", "mixed": "מעורב", "same": "בלי שינוי"}.get(e.get("verdict"), ""),
-                     ", ".join(f"{a['param']}={a['new']}" for a in adv) or "—"]
+                     ", ".join(f"{a['param']}={a['new']}" for a in adv) or "—",
+                     _fmt_metric(m.get("backlash"), "°")]
             for c, text in enumerate(cells):
                 item = QTableWidgetItem(text)
                 if c == 0 and e is best:

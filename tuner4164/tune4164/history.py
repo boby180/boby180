@@ -30,6 +30,7 @@ METRICS = [
     ("following", "פיגור בזמן נסיעה", "ספירות", 0.10, 3, 1.0),
     ("ripple", "אדוות בזמן נסיעה", "ספירות", 0.15, 1, 0.5),
     ("tacho_err", "סטיית חיישן המהירות", "%", 0.25, 0.3, 1.0),
+    ("backlash", "משחק (backlash)", "°", 0.15, 0.002, 0.0),
     ("cmd_noise", "רעש בפקודת הדרייבר", "", 0.25, 0.03, 0.5),
     ("overshoot", "חריגה בצעד", "%", 0.15, 2, 1.0),
     ("step_settle", "התייצבות בצעד", "s", 0.10, 0.02, 1.0),
@@ -57,6 +58,9 @@ def metrics(an: Analysis) -> dict:
             m["oscillations"] = mv.oscillations
             m["stuck_time"] = (NOT_SETTLED if mv.stuck_time is None else mv.stuck_time) if mv.stick else 0.0
             m["stuck_error"] = abs(mv.stuck_error) if mv.stick else 0.0
+    bl = getattr(an, "backlash", None)
+    if bl is not None and bl.ok and bl.counts_per_deg:
+        m["backlash"] = bl.deg(bl.max)
     s = an.step
     if s and s.ok:
         m["overshoot"] = s.overshoot_pct
