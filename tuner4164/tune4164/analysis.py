@@ -95,6 +95,16 @@ class BacklashMetrics:
     dirs: list = field(default_factory=list)       # direction of the new torque at each reversal (+1 / -1)
     peak_cmd: float = 0.0                          # how hard the axis was driven (95th percentile of |command|)
     counts_per_deg: float | None = None
+    accel_cmd: list = field(default_factory=list)  # |command| just after each reversal (accelerating)
+    cruise_cmd: list = field(default_factory=list) # |command| at constant speed after it (friction alone)
+
+    @property
+    def friction_bound(self) -> bool:
+        """The torque after a reversal is mostly friction (accelerating takes little more than cruising), so a
+        slower, gentler move does not make the elastic twist smaller: only the motor-off push test separates
+        the backlash from it."""
+        pairs = [(a, c) for a, c in zip(self.accel_cmd, self.cruise_cmd) if c > 0]
+        return bool(pairs) and float(np.median([a / c for a, c in pairs])) < 1.5
 
     @property
     def ok(self) -> bool:
@@ -450,7 +460,20 @@ def backlash_metrics(t: np.ndarray, pos: np.ndarray, tacho: np.ndarray, ratio: f
     usually change during the deceleration (the motor brakes), not at the start of the next move.
     Without the command: fall back to the start of each reversed move."""
     if cmd is not None and vel is not None:
-        return _backlash_by_torque(t, tacho, ratio, offset, cmd, vel, counts_per_deg, pos=pos)
+        m = _backlash_by_torque(t, tacho, ratio, offset, cmd, vel, counts_per_deg, pos=pos)
+        top = float(np.max(np.abs(vel))) or 1.0
+        for tr in m.times:
+            acc = (t > tr + 0.1) & (t < tr + 0.35)
+            win = (t > tr + 0.35) & (t < tr + 5.0)
+            if not acc.any() or not win.any():
+                continue
+            d = np.sign(np.median(vel[acc]))
+            vmax = float(np.max(d * vel[win]))
+            cru = win & (d * vel > 0.9 * vmax)     # the cruise of the move that follows the reversal
+            if vmax > 0.3 * top and cru.sum() > 10:
+                m.accel_cmd.append(float(np.median(np.abs(cmd[acc]))))
+                m.cruise_cmd.append(float(np.median(np.abs(cmd[cru]))))
+        return m
     m = BacklashMetrics(counts_per_deg=counts_per_deg)
     n = min(len(t), len(pos), len(tacho))
     if n < 50 or not ratio:
@@ -573,7 +596,9 @@ class PushMetrics:
 
 def _motor_turning(t: np.ndarray, tacho: np.ndarray) -> np.ndarray:
     """Samples where the motor turns, from the tacho: well above its noise at rest, for at least ~5 ms."""
-    x = tacho - np.median(tacho)
+    # the rest level: near zero when the motor moves most of the time, else the median (a still motor)
+    quiet = tacho[np.abs(tacho) <= 0.05 * float(np.max(np.abs(tacho)))]
+    x = tacho - (np.median(quiet) if len(quiet) >= 0.01 * len(tacho) else np.median(tacho))
     dt = float(np.median(np.diff(t))) if len(t) > 1 else 1e-3
     k = max(1, int(round(0.005 / dt)))
     xs = np.convolve(x, np.ones(k) / k, mode="same")
@@ -650,10 +675,13 @@ def push_backlash(t: np.ndarray, pos: np.ndarray, tacho: np.ndarray | None = Non
     return m
 
 
-def looks_like_push(t: np.ndarray, pos: np.ndarray, tacho: np.ndarray | None) -> bool:
-    """A motor-off push recording: the load moves, and most of it while the motor stands still."""
+def looks_like_push(t: np.ndarray, pos: np.ndarray, tacho: np.ndarray | None,
+                    vref: np.ndarray | None = None) -> bool:
+    """A motor-off push recording: no commanded motion, the load moves, and most of it while the motor stands still."""
     if pos is None or tacho is None or len(pos) < 50 or np.ptp(pos) < 5:
         return False
+    if vref is not None and np.max(np.abs(vref)) > 0.01 * (np.max(np.abs(np.gradient(pos, t))) + 1):
+        return False                       # the controller commanded a move: the motor was on
     mask = _motor_turning(t, np.asarray(tacho, float))
     dp = np.abs(np.diff(pos, prepend=pos[0]))
     return float(np.sum(dp[~mask])) > 0.5 * float(np.sum(dp)) and float(np.mean(mask)) < 0.5

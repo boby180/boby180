@@ -464,7 +464,9 @@ class MainWindow(QMainWindow):
         act_i = self.rec.guess("actual")
         if act_i is not None and looks_like_push(self.rec.time, self.rec.data[:, act_i].astype(float),
                                                  None if roles["tacho"] is None else
-                                                 self.rec.data[:, roles["tacho"]].astype(float)):
+                                                 self.rec.data[:, roles["tacho"]].astype(float),
+                                                 None if (vr := self.rec.guess("velocity_ref")) is None else
+                                                 self.rec.data[:, vr].astype(float)):
             self.test.setCurrentIndex(self.test.findData("push"))   # motor off, the slide pushed by hand
         elif roles["tacho"] is not None and roles["reference"] is None and roles["error"] is None:
             self.test.setCurrentIndex(self.test.findData("tacho"))  # a sensor-vs-encoder recording

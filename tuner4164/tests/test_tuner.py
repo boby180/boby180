@@ -862,3 +862,27 @@ def test_regular_move_is_not_a_push():
     vel = np.where((t % 2) < 1, 20000.0, -20000.0)
     pos = np.cumsum(vel) * 0.003
     assert not looks_like_push(t, pos, vel * 0.01 + np.random.default_rng(1).normal(0, 1, len(t)))
+
+
+def test_friction_bound_points_to_push_test():
+    from tune4164.advise import Advice, apply_backlash
+    from tune4164.analysis import BacklashMetrics
+    bl = BacklashMetrics(travels=[6.0, 5.0], windups=[450.0, 400.0], dirs=[1, -1], counts_per_deg=1536.0,
+                         accel_cmd=[950.0, 1000.0], cruise_cmd=[1100.0, 1150.0])
+    assert bl.friction_bound
+    adv = Advice()
+    apply_backlash(adv, bl, 0.05)
+    assert "דחיפה ביד" in adv.findings[1] and "חיכוך" in adv.findings[1]
+    bl.accel_cmd = [3200.0, 3400.0]
+    bl.cruise_cmd = [1000.0, 1100.0]
+    assert not bl.friction_bound
+
+
+def test_slow_commanded_move_is_not_a_push():
+    from tune4164.analysis import looks_like_push
+    t = np.arange(0, 20, 0.003)
+    vref = np.where(t > 1, 20000.0, 0.0)
+    pos = np.cumsum(vref) * 0.003
+    tacho = vref + np.random.default_rng(2).normal(0, 150, len(t))
+    assert not looks_like_push(t, pos, tacho, vref)
+    assert not looks_like_push(t, pos, tacho)
