@@ -92,6 +92,8 @@ class BacklashMetrics:
     travels: list = field(default_factory=list)    # backlash (dead zone) per reversal, in counts
     times: list = field(default_factory=list)      # when each reversal started [s]
     windups: list = field(default_factory=list)    # lost motion under torque (backlash + elasticity), counts
+    dirs: list = field(default_factory=list)       # direction of the new torque at each reversal (+1 / -1)
+    peak_cmd: float = 0.0                          # how hard the axis was driven (95th percentile of |command|)
     counts_per_deg: float | None = None
 
     @property
@@ -112,6 +114,14 @@ class BacklashMetrics:
     @property
     def windup_max(self) -> float:
         return float(np.max(self.windups)) if self.windups else 0.0
+
+    @property
+    def windup_mean(self) -> float:
+        return float(np.mean(self.windups)) if self.windups else 0.0
+
+    def windup_mean_dir(self, d: int) -> float | None:
+        vals = [w for w, x in zip(self.windups, self.dirs) if x == d]
+        return float(np.mean(vals)) if vals else None
 
 
 @dataclass
@@ -496,7 +506,8 @@ def _backlash_by_torque(t, tacho, ratio, offset, cmd, vel, counts_per_deg, pos=N
     r = sp - v                                                               # motor speed - load speed
     c = cmd[:n].astype(float)
     p_ = None if pos is None else pos[:n].astype(float)
-    lvl = level * (np.percentile(np.abs(c), 95) or 1.0)
+    m.peak_cmd = float(np.percentile(np.abs(c), 95))
+    lvl = level * (m.peak_cmd or 1.0)
     sign = np.where(c > lvl, 1, np.where(c < -lvl, -1, 0))
     dt = float(np.median(np.diff(t))) or 1e-3
     k = max(1, int(round(0.03 / dt)))
@@ -522,6 +533,7 @@ def _backlash_by_torque(t, tacho, ratio, offset, cmd, vel, counts_per_deg, pos=N
                             dead = max(0.0, float(np.sum(sp[z:q] - slope / dt)) * dt * new_dir)
                 m.travels.append(dead)
                 m.windups.append(windup)
+                m.dirs.append(int(-last))
                 m.times.append(float(t0))
                 last_event = t0
         last, last_i = sign[i], i

@@ -538,27 +538,34 @@ BACKLASH_LIMIT_DEG = 0.05
 
 
 def apply_backlash(adv: Advice, bl, limit_deg: float = BACKLASH_LIMIT_DEG) -> None:
-    """Report the backlash (dead zone) measured at the torque reversals, alert when it is above the limit, and show
-    the elastic windup apart: it is lost motion too, but not play, and adjusting the gear backlash does not change it."""
+    """Report, as averages over all torque reversals: the lost motion between motor and load (backlash + the elastic
+    twist of the drive under the torque) and the dead zone. With the same motion and torque the elastic part is the
+    same, so a change of the lost motion between recordings is a change of the backlash. The dead zone, or the lost
+    motion of a slow, low-acceleration test, is the backlash on its own."""
     if bl is None or not bl.ok:
         return
     n = len(bl.travels)
-    if bl.counts_per_deg:
-        mean_d, max_d = bl.deg(bl.mean), bl.deg(bl.max)
-        mark = "✘" if max_d > limit_deg else "✔"
-        text = (f"{mark} משחק (backlash, שטח מת) בין המנוע לעומס: {max_d:.4f}° ({bl.max:.0f} ספירות, "
-                f"{max_d * 60:.2f} דקות-קשת), הכי גדול מתוך {n} היפוכי מומנט (ממוצע {mean_d:.4f}°). מותר {limit_deg:g}°.")
-        if bl.windups:
-            w = bl.deg(bl.windup_max)
-            text += (f" בנוסף, תחת מומנט התמסורת מתפתלת (גמישות, windup) עד {w:.4f}°: זה לא משחק, והוא לא משתנה "
-                     "בכיוון הבקלש; הוא תלוי בתאוצה ובקשיחות של הגיר, הצימוד והציר.")
-        adv.findings.insert(0, text)
-        if max_d > limit_deg:
-            adv.warnings.insert(0, f"{BACKLASH_ALERT}: נמדד {max_d:.4f}° (מותר {limit_deg:g}°). זו בעיה מכנית (תמסורת, גיר, צימוד): "
-                                   "הגברים לא יתקנו אותה, ומשחק גדול גורם לרעידות ולחיכוך ליד המטרה. בודקים את המכניקה.")
-    else:
-        adv.findings.insert(0, f"משחק (backlash): {bl.mean:.0f} ספירות בממוצע מתוך {n} היפוכי מומנט. כדי להמיר למעלות ולהשוות "
-                               "ל-0.05° צריך PA[43] ב-PRM.")
+    if not bl.counts_per_deg:
+        adv.findings.insert(0, f"משחק (backlash): איבוד תנועה ממוצע {bl.windup_mean:.0f} ספירות מתוך {n} היפוכי מומנט. "
+                               "כדי להמיר למעלות ולהשוות ל-0.05° צריך PA[43] ב-PRM.")
+        return
+    lost, dead = bl.deg(bl.windup_mean), bl.deg(bl.mean)
+    sides = [(name, bl.windup_mean_dir(d)) for name, d in (("קדימה", 1), ("אחורה", -1))]
+    sides_txt = ", ".join(f"{nm} {bl.deg(v):.4f}°" for nm, v in sides if v is not None)
+    over = dead > limit_deg
+    mark = "✘" if over else "✔"
+    adv.findings.insert(0, (
+        f"{mark} משחק (backlash), ממוצע על {n} היפוכי מומנט: שטח מת {dead:.4f}° (המנוע זז והעומס עוד לא), "
+        f"ואיבוד תנועה בין המנוע לעומס {lost:.4f}° ({sides_txt}). מותר {limit_deg:g}°. איבוד התנועה כולל גם את "
+        "הגמישות של התמסורת תחת המומנט: באותה תנועה (אותה תאוצה) הגמישות זהה, ולכן השינוי שלו בין הקלטות הוא השינוי "
+        "במשחק. למשחק נקי, במעלות, עושים את בדיקת המשחק האיטית (תאוצה נמוכה): שם הגמישות קטנה."))
+    if over:
+        adv.warnings.insert(0, f"{BACKLASH_ALERT}: שטח מת ממוצע {dead:.4f}° (מותר {limit_deg:g}°). זו בעיה מכנית (תמסורת, גיר, "
+                               "צימוד): הגברים לא יתקנו אותה. בודקים את המכניקה.")
+    elif lost > limit_deg:
+        adv.findings.insert(1, f"איבוד התנועה הממוצע ({lost:.4f}°) גדול מ-{limit_deg:g}°, אבל השטח המת קטן: רוב איבוד התנועה "
+                               "הוא כנראה גמישות תחת מומנט התאוצה. כדי לדעת כמה ממנו משחק, עושים את בדיקת המשחק האיטית "
+                               "(הכפתור הכחול \"ההקלטה הסטנדרטית\", סעיף 4) ובודקים את איבוד התנועה שם.")
 
 
 BACKLASH_ALERT = "משחק גדול מהמותר"
