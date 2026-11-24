@@ -22,6 +22,7 @@ TESTS = {
     "velocity_step": "צעד מהירות (KP=0)",
     "position_step": "צעד מיקום קטן",
     "move": "תנועה רגילה לנקודה (PTP)",
+    "push": "בדיקת משחק: מנוע כבוי, דחיפה ביד",
 }
 
 
@@ -569,3 +570,43 @@ def apply_backlash(adv: Advice, bl, limit_deg: float = BACKLASH_LIMIT_DEG) -> No
 
 
 BACKLASH_ALERT = "משחק גדול מהמותר"
+
+
+def push_advice(pm, limit_deg: float = BACKLASH_LIMIT_DEG, warnings: list | None = None,
+                motor_on: bool = False) -> Advice:
+    """The hand-push test (motor off): the gap the load crosses while the motor stands still, per push."""
+    adv = Advice(warnings=list(warnings or []))
+    if motor_on:
+        adv.warnings.append("פקודת הדרייבר בהקלטה לא אפס: נראה שהמנוע לא היה כבוי. בבדיקת דחיפה ביד מכבים את המנוע "
+                            "(MO=0), אחרת הבקר מחזיק את הציר והמדידה לא נכונה.")
+    if pm is None or not pm.ok:
+        adv.status = "stop"
+        adv.findings.append("לא נמצאו דחיפות בהקלטה. דוחפים את הסלייד ביד לצד אחד עד שהוא נעצר, ואז לצד השני, 4-5 "
+                            "פעמים, בזמן שההקלטה רצה (עם Position ו-Analog Input).")
+        return adv
+    n = len(pm.swings)
+    if not pm.counts_per_deg:
+        adv.findings.append(f"משחק בדחיפה ביד: ממוצע {pm.mean:.0f} ספירות, הגדול ביותר {pm.max:.0f} ספירות ({n} דחיפות). "
+                            "כדי להמיר למעלות ולהשוות ל-0.05° צריך PA[43] ב-PRM.")
+        return adv
+    worst, mean = pm.deg(pm.max), pm.deg(pm.mean)
+    over = worst > limit_deg
+    each = ", ".join(f"{pm.deg(s):.4f}°" for s in pm.swings)
+    adv.findings.append(f"{'✘' if over else '✔'} משחק בדחיפה ביד: הגדול ביותר {worst:.4f}°, ממוצע {mean:.4f}° "
+                        f"({pm.max:.0f} / {pm.mean:.0f} ספירות). מותר {limit_deg:g}°.")
+    adv.findings.append(f"כל דחיפה ({n}): {each}.")
+    if pm.has_tacho and pm.motor_moved_pct > 1:
+        adv.findings.append(f"המנוע הסתובב בחלק מהדחיפות ({pm.motor_moved_pct:.0f}% מתנועת העומס): את התנועה בזמן שהמנוע "
+                            "הסתובב לא ספרתי, כי היא לא משחק. אם זה הרבה, דוחפים בעדינות רק עד שמרגישים את הקצה.")
+    if not pm.has_tacho:
+        adv.warnings.append("אין בהקלטה את חיישן המהירות (Analog Input), ולכן אי אפשר לדעת אם המנוע נגרר בדחיפה. "
+                            "המדידה היא כל תנועת העומס, וזה עלול להיות יותר מהמשחק. מוסיפים Analog Input להקלטה.")
+    if n < 3:
+        adv.warnings.append(f"נמצאו רק {n} דחיפות. לתוצאה אמינה דוחפים 4-5 פעמים לכל צד.")
+    if over:
+        adv.status = "stop"
+        adv.warnings.insert(0, f"{BACKLASH_ALERT}: בדחיפה ביד {worst:.4f}° (מותר {limit_deg:g}°). זו בעיה מכנית (תמסורת, "
+                               "גיר, צימוד): בודקים את המכניקה. הגברים לא יתקנו אותה.")
+    else:
+        adv.meets_spec = True
+    return adv

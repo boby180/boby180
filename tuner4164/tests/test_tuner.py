@@ -822,3 +822,43 @@ def test_backlash_is_the_dead_zone_and_windup_is_apart():
     t, pos, tacho, vel, cmd = _reversal_with(dead_counts=150, windup_counts=0)      # real play: 0.1 degree
     bl = backlash_metrics(t, pos, tacho, 1.0, cmd=cmd, vel=vel, counts_per_deg=cpd)
     assert abs(bl.deg(bl.max) - 0.098) < 0.01
+
+
+def _hand_push(gap_deg, cpd=1536.0, drag=False, seed=0):
+    """Motor off, the slide pushed by hand from side to side: the load crosses the gap, the motor stays still
+    (with drag=True the motor is also dragged a little after the gap is taken up)."""
+    rng = np.random.default_rng(seed)
+    t = np.arange(0, 10, 0.003)
+    f = np.sign(np.sin(2 * np.pi * t / 2 + 0.3))
+    load, motor = np.zeros_like(t), np.zeros_like(t)
+    l = mo = 0.0
+    for i in range(1, len(t)):
+        l += (mo + f[i] * gap_deg * cpd / 2 - l) * 0.08
+        if drag and abs(t[i] % 2 - 1.2) < 0.1:
+            mo += 1.5 * f[i]
+            l += 1.5 * f[i]
+        load[i], motor[i] = l, mo
+    tacho = np.gradient(motor, t) * 0.01 + rng.normal(0, 0.002, len(t)) + 0.05
+    return t, np.round(load + rng.normal(0, 0.3, len(t))), tacho
+
+
+@pytest.mark.parametrize("gap,drag,ok", [(0.04, False, True), (0.04, True, True), (0.06, False, False), (0.06, True, False)])
+def test_hand_push_backlash(gap, drag, ok):
+    from tune4164.advise import push_advice
+    from tune4164.analysis import looks_like_push, push_backlash
+    t, pos, tacho = _hand_push(gap, drag=drag)
+    assert looks_like_push(t, pos, tacho)
+    pm = push_backlash(t, pos, tacho, counts_per_deg=1536.0)
+    assert len(pm.swings) >= 6
+    assert pm.deg(pm.mean) == pytest.approx(gap, abs=0.003)
+    adv = push_advice(pm, 0.05)
+    assert adv.meets_spec is ok
+    assert adv.findings[0].startswith("✔" if ok else "✘")
+
+
+def test_regular_move_is_not_a_push():
+    from tune4164.analysis import looks_like_push
+    t = np.arange(0, 6, 0.003)
+    vel = np.where((t % 2) < 1, 20000.0, -20000.0)
+    pos = np.cumsum(vel) * 0.003
+    assert not looks_like_push(t, pos, vel * 0.01 + np.random.default_rng(1).normal(0, 1, len(t)))

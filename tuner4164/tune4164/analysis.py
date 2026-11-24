@@ -131,6 +131,7 @@ class Analysis:
     move: MoveMetrics | None = None
     command: CommandMetrics | None = None
     backlash: BacklashMetrics | None = None
+    push: "PushMetrics | None" = None
     warnings: list[str] = field(default_factory=list)
 
 
@@ -538,3 +539,121 @@ def _backlash_by_torque(t, tacho, ratio, offset, cmd, vel, counts_per_deg, pos=N
                 last_event = t0
         last, last_i = sign[i], i
     return m
+
+
+@dataclass
+class PushMetrics:
+    """The hand-push backlash test: motor off (MO=0), the slide is pushed by hand to one side until it stops, then
+    to the other. The load (encoder) crosses the gap while the motor stays still; the motor is watched with the
+    tacho, and any load travel while the motor turns (it was dragged) is not counted."""
+    swings: list = field(default_factory=list)      # load travel of each full push [counts]
+    times: list = field(default_factory=list)       # when each push ended [s]
+    turns: list = field(default_factory=list)       # (time, value) of the turning points of the load travel
+    motor_moved_pct: float = 0.0                    # share of the load travel made while the motor turned
+    has_tacho: bool = False
+    counts_per_deg: float | None = None
+    free: np.ndarray | None = None                  # load travel with the motor still, per sample [counts]
+    motor_mask: np.ndarray | None = None
+
+    @property
+    def ok(self) -> bool:
+        return bool(self.swings)
+
+    def deg(self, counts: float) -> float | None:
+        return counts / self.counts_per_deg if self.counts_per_deg else None
+
+    @property
+    def mean(self) -> float:
+        return float(np.mean(self.swings)) if self.swings else 0.0
+
+    @property
+    def max(self) -> float:
+        return float(np.max(self.swings)) if self.swings else 0.0
+
+
+def _motor_turning(t: np.ndarray, tacho: np.ndarray) -> np.ndarray:
+    """Samples where the motor turns, from the tacho: well above its noise at rest, for at least ~5 ms."""
+    x = tacho - np.median(tacho)
+    dt = float(np.median(np.diff(t))) if len(t) > 1 else 1e-3
+    k = max(1, int(round(0.005 / dt)))
+    xs = np.convolve(x, np.ones(k) / k, mode="same")
+    # the noise from sample-to-sample jitter: a turning motor changes the tacho smoothly, so it does not inflate it
+    sigma = 1.4826 * float(np.median(np.abs(np.diff(x)))) / math.sqrt(2) + 1e-9
+    d = np.abs(np.diff(x))
+    step = float(np.min(d[d > 0])) if np.any(d > 0) else 0.0   # one converter step: a quiet tacho flickers by it
+    on = np.abs(xs) > max(6 * sigma, 3 * step)
+    out = np.zeros_like(on)
+    i, n = 0, len(on)
+    while i < n:                     # keep only runs that last
+        if on[i]:
+            j = i
+            while j < n and on[j]:
+                j += 1
+            if j - i >= k:
+                out[i:j] = True
+            i = j
+        else:
+            i += 1
+    return out
+
+
+def push_backlash(t: np.ndarray, pos: np.ndarray, tacho: np.ndarray | None = None,
+                  counts_per_deg: float | None = None, hyst: float | None = None,
+                  full_frac: float = 0.3) -> PushMetrics:
+    m = PushMetrics(counts_per_deg=counts_per_deg, has_tacho=tacho is not None)
+    pos = np.asarray(pos, float)
+    if len(pos) < 10:
+        return m
+    dp = np.diff(pos, prepend=pos[0])
+    if tacho is not None:
+        mask = _motor_turning(t, np.asarray(tacho, float))
+        m.motor_mask = mask
+        total = float(np.sum(np.abs(dp))) or 1.0
+        m.motor_moved_pct = 100.0 * float(np.sum(np.abs(dp[mask]))) / total
+        dp = np.where(mask, 0.0, dp)
+    free = np.cumsum(dp)
+    m.free = free
+    rng = float(np.ptp(free))
+    h = hyst if hyst is not None else max(3.0, 0.1 * rng)
+    if rng < h:
+        return m
+    # turning points with hysteresis
+    turns = [(0, free[0])]
+    ext_i, direction = 0, 0
+    for i in range(1, len(free)):
+        v = free[i]
+        if direction >= 0 and v > free[ext_i] or direction <= 0 and v < free[ext_i]:
+            if direction == 0 and abs(v - free[0]) < h:
+                continue
+            ext_i = i
+            if direction == 0:
+                direction = 1 if v > free[0] else -1
+            continue
+        if direction != 0 and abs(v - free[ext_i]) >= h:
+            turns.append((ext_i, free[ext_i]))
+            direction = -direction
+            ext_i = i
+    if direction != 0:
+        turns.append((ext_i, free[ext_i]))
+    sw = [(abs(b[1] - a[1]), b[0]) for a, b in zip(turns, turns[1:])]
+    # the first push starts from wherever the slide was left and the last one may be cut by the end of the
+    # recording: count them only if they are about as big as the pushes in between
+    if len(sw) > 2:
+        mid = float(np.median([s for s, _ in sw[1:-1]]))
+        sw = sw[1:] if sw[0][0] < 0.9 * mid else sw
+        sw = sw[:-1] if sw[-1][0] < 0.9 * mid else sw
+    top = max(s for s, _ in sw) if sw else 0.0
+    full = [(s, i) for s, i in sw if s >= full_frac * top]
+    m.swings = [float(s) for s, _ in full]
+    m.times = [float(t[i]) for _, i in full]
+    m.turns = [(float(t[i]), float(v)) for i, v in turns]
+    return m
+
+
+def looks_like_push(t: np.ndarray, pos: np.ndarray, tacho: np.ndarray | None) -> bool:
+    """A motor-off push recording: the load moves, and most of it while the motor stands still."""
+    if pos is None or tacho is None or len(pos) < 50 or np.ptp(pos) < 5:
+        return False
+    mask = _motor_turning(t, np.asarray(tacho, float))
+    dp = np.abs(np.diff(pos, prepend=pos[0]))
+    return float(np.sum(dp[~mask])) > 0.5 * float(np.sum(dp)) and float(np.mean(mask)) < 0.5

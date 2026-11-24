@@ -32,6 +32,7 @@ METRICS = [
     ("tacho_err", "סטיית חיישן המהירות", "%", 0.25, 0.3, 1.0),
     ("backlash", "משחק: שטח מת ממוצע", "°", 0.15, 0.002, 0.0),
     ("lost_motion", "משחק: איבוד תנועה ממוצע", "°", 0.03, 0.003, 0.0),
+    ("push_gap", "משחק בדחיפה ביד (הגדול)", "°", 0.10, 0.002, 0.0),
     ("cmd_noise", "רעש בפקודת הדרייבר", "", 0.25, 0.03, 0.5),
     ("overshoot", "חריגה בצעד", "%", 0.15, 2, 1.0),
     ("step_settle", "התייצבות בצעד", "s", 0.10, 0.02, 1.0),
@@ -64,6 +65,9 @@ def metrics(an: Analysis) -> dict:
         m["backlash"] = bl.deg(bl.mean)
         if bl.windups:
             m["lost_motion"] = bl.deg(bl.windup_mean)
+    pu = getattr(an, "push", None)
+    if pu is not None and pu.ok and pu.counts_per_deg:
+        m["push_gap"] = pu.deg(pu.max)
     s = an.step
     if s and s.ok:
         m["overshoot"] = s.overshoot_pct
@@ -295,10 +299,10 @@ class History:
     def for_axis(self, unit: str, axis: str) -> list[dict]:
         return [e for e in self.entries if e.get("unit") == unit and e.get("axis") == axis]
 
-    def previous(self, unit: str, axis: str, rec_key: str) -> dict | None:
+    def previous(self, unit: str, axis: str, rec_key: str, push: bool = False) -> dict | None:
         """The entry before this recording in the unit/axis sequence (for a recording analysed for the
-        first time: the last one)."""
-        seq = self.for_axis(unit, axis)
+        first time: the last one). Hand-push backlash tests are compared only with each other."""
+        seq = [e for e in self.for_axis(unit, axis) if (e.get("test") == "push") == push]
         keys = [e.get("rec_key") for e in seq]
         if rec_key in keys:
             i = keys.index(rec_key)

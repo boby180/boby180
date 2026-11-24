@@ -21,12 +21,13 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .advise import BACKLASH_LIMIT_DEG, SET_NAMES, TESTS, Advice, advise, apply_backlash
+from .advise import BACKLASH_LIMIT_DEG, SET_NAMES, TESTS, Advice, advise, apply_backlash, push_advice
 from .loopguard import best_run, guard
 from . import help as helpkb
 from .history import (History, advice_fields, compare, extract_run, fingerprint, load_run, make_entry, other_unit,
                       run_document, step_back)
-from .analysis import Analysis, backlash_metrics, command_metrics, move_metrics, moving_from_velocity, step_metrics, tacho_metrics
+from .analysis import (Analysis, backlash_metrics, command_metrics, looks_like_push, move_metrics, moving_from_velocity,
+                       push_backlash, step_metrics, tacho_metrics)
 from .prm import AXES, TUNING_KEYS, PrmFile, load_prm, parse_prm, prm_text
 from .recording import SAMPLE_TIME_4M, Recording, load_recording
 from .version import __version__
@@ -459,13 +460,19 @@ class MainWindow(QMainWindow):
             combo.setCurrentIndex(0 if idx is None else idx + 1)
             combo.blockSignals(False)
         self._update_cols_summary()
-        if self.rec.guess("error") is None and (self.rec.guess("reference") is None or self.rec.guess("actual") is None):
-            self._show_cols(True)   # the program could not find the position error: let the user choose
         roles = {r: self.rec.guess(r) for r in ("reference", "error", "velocity", "tacho")}
-        if roles["tacho"] is not None and roles["reference"] is None and roles["error"] is None:
+        act_i = self.rec.guess("actual")
+        if act_i is not None and looks_like_push(self.rec.time, self.rec.data[:, act_i].astype(float),
+                                                 None if roles["tacho"] is None else
+                                                 self.rec.data[:, roles["tacho"]].astype(float)):
+            self.test.setCurrentIndex(self.test.findData("push"))   # motor off, the slide pushed by hand
+        elif roles["tacho"] is not None and roles["reference"] is None and roles["error"] is None:
             self.test.setCurrentIndex(self.test.findData("tacho"))  # a sensor-vs-encoder recording
         else:
             self.test.setCurrentIndex(self.test.findData("full"))
+        if (self.test.currentData() != "push" and self.rec.guess("error") is None
+                and (self.rec.guess("reference") is None or self.rec.guess("actual") is None)):
+            self._show_cols(True)   # the program could not find the position error: let the user choose
         notes = "".join(f"<li>{html.escape(n)}</li>" for n in self.rec.notes)
         self.result.setHtml(f"<p>נטענו {len(self.rec.time)} דגימות, {len(self.rec.names)} עמודות, "
                             f"{self.rec.time[-1]:.3f} שניות.</p><ul>{notes}</ul>"
@@ -558,6 +565,9 @@ class MainWindow(QMainWindow):
         an = Analysis()
         gains = self._gains()
         vel, tacho, vref = self._col("velocity"), self._col("tacho"), self._col("velocity_ref")
+        if test == "push":
+            self._analyze_push(t, act, tacho, cmd, gains, an, remember)
+            return
         if test in ("full", "move"):
             if pe is None and ref is not None and act is not None:
                 pe = ref - act
@@ -613,6 +623,42 @@ class MainWindow(QMainWindow):
                                            "שמורה עם ה-PRM שהיה בזמן שלה.")
         self._plot(t, ref, act, pe, cmd, test, vel, tacho)
         self._show_advice()
+
+    def _analyze_push(self, t, act, tacho, cmd, gains, an, remember) -> None:
+        """Motor off, the slide pushed by hand from side to side: the gap the load crosses with the motor still."""
+        if act is None:
+            self.result.setHtml("<p style='color:#c62f2f'>בבדיקת דחיפה ביד צריך בהקלטה את Position.</p>")
+            return
+        pa43 = self.prm.get(self.axis.currentText(), "PA[43]")
+        an.push = push_backlash(t, act, tacho, counts_per_deg=pa43 / 10000 if pa43 else None)
+        motor_on = cmd is not None and float(np.percentile(np.abs(cmd), 95)) > 0.02 * 32767
+        self.advice = push_advice(an.push, self.req_backlash.value(), an.warnings, motor_on)
+        if remember:
+            self._remember("push", gains, an, None, None)
+        else:
+            self.comparison = None
+        self._plot_push(t, act, tacho, an.push)
+        self._show_advice()
+
+    def _plot_push(self, t, act, tacho, pm) -> None:
+        self.plot.clear()
+        self.plot2.clear()
+        self.plot.addLegend()
+        cpd = pm.counts_per_deg or 1.0
+        unit = "°" if pm.counts_per_deg else "ספירות"
+        self.plot.plot(t, (act - act[0]) / cpd, pen=pg.mkPen("#9aa7b5", width=1), name="תנועת העומס (אנקודר)")
+        if pm.free is not None:
+            self.plot.plot(t, pm.free / cpd, pen=pg.mkPen("#1f6fb3", width=1.5), name="תנועה כשהמנוע עומד = משחק")
+        if pm.turns:
+            self.plot.plot([x for x, _ in pm.turns], [v / cpd for _, v in pm.turns], pen=None, symbol="o",
+                           symbolSize=7, symbolBrush="#c62f2f", name="קצה של דחיפה")
+        self.plot.setTitle(f"בדיקת משחק בדחיפה ביד ({unit})")
+        if tacho is not None:
+            self.plot2.plot(t, tacho, pen=pg.mkPen("#e08a00", width=1))
+            if pm.motor_mask is not None and pm.motor_mask.any():
+                self.plot2.plot(t[pm.motor_mask], tacho[pm.motor_mask], pen=None, symbol="o", symbolSize=3,
+                                symbolBrush="#c62f2f")
+            self.plot2.setTitle("חיישן המהירות של המנוע (אדום: המנוע הסתובב, התנועה לא נספרה)")
 
     # ---- offline help ----
     def _help_tab(self) -> QWidget:
@@ -707,7 +753,8 @@ class MainWindow(QMainWindow):
         unit = self.unit.currentText()
         entry["unit"] = unit
         entry["fingerprint"] = fingerprint(self.prm, axis)
-        prev = self.history.previous(unit, axis, entry["rec_key"])
+        push = test == "push"
+        prev = self.history.previous(unit, axis, entry["rec_key"], push=push)
         # the same recording saved before (a PRM loaded after it) or the previous recording of this rotator
         ref = self.history.get(unit, axis, entry["rec_key"]) or prev
         diff = other_unit(ref.get("fingerprint"), entry["fingerprint"]) if ref else []
@@ -729,7 +776,7 @@ class MainWindow(QMainWindow):
                                                 f"({', '.join(diff)}).")
             sensor_fix = any(k in ("AS", "AG", "AF") for c in self.advice.changes for k, _, _ in c.items())
             back = (step_back(self.comparison, gains)
-                    if not diff and not sensor_fix and not self.advice.meets_spec else None)
+                    if not diff and not sensor_fix and not self.advice.meets_spec and not push else None)
             if back is not None:
                 undone = {k for k, _, _ in back.items()}
                 self.advice.changes = [back] + [c for c in self.advice.changes
@@ -742,8 +789,8 @@ class MainWindow(QMainWindow):
         seq = seq[:keys.index(entry["rec_key"])] if entry["rec_key"] in keys else seq
         # only runs made with the same speed-sensor scale on the same controller can be compared
         seq = [r for r in seq if all(r.get("gains", {}).get(k) == entry["gains"].get(k) for k in ("AG", "AF"))
-               and not other_unit(r.get("fingerprint"), entry["fingerprint"])]
-        if seq and not self.advice.meets_spec:
+               and not other_unit(r.get("fingerprint"), entry["fingerprint"]) and r.get("test") != "push"]
+        if seq and not self.advice.meets_spec and not push:
             for note in reversed(guard(self.advice, entry, seq)):
                 self.advice.warnings.insert(0, note)
         entry.update(advice_fields(self.advice))
@@ -1212,7 +1259,8 @@ class MainWindow(QMainWindow):
         a = self.advice
         axis = self.axis.currentText()
         parts = [self._comparison_html()]
-        missing = self._missing_for_tuning()
+        push = self.test.currentData() == "push"
+        missing = [] if push else self._missing_for_tuning()
         if missing:
             parts.append("<div style='background:#e6f0fa; border:2px solid #1f6fb3; padding:8px;'>"
                          "<p style='font-size:12pt'><b>כדי לקבל המלצות ל-KP / KI / KD חסרים בהקלטה הזו:</b></p><ul>"
@@ -1225,7 +1273,15 @@ class MainWindow(QMainWindow):
             else:
                 parts.append(f"<p style='color:#b86e00'>⚠ {html.escape(w)}</p>")
         parts.append("<ul>" + "".join(f"<li>{html.escape(f)}</li>" for f in a.findings) + "</ul>")
-        if a.meets_spec and not a.changes:
+        if push and not a.meets_spec and not any(f.startswith("✘") for f in a.findings):
+            pass                   # no verdict (no pushes found, or no PA[43] to convert to degrees)
+        elif push:
+            parts.append("<div style='background:#e8f4ec; border:2px solid #1f9d55; padding:8px;'>"
+                         "<p style='font-size:13pt; color:#1f7a44'><b>✔ המשחק בדחיפה ביד בתוך המותר.</b></p></div>"
+                         if a.meets_spec else
+                         "<div style='background:#fdecec; border:2px solid #c62f2f; padding:8px;'>"
+                         "<p style='font-size:13pt; color:#a11d1d'><b>✘ המשחק בדחיפה ביד לא עומד בדרישה.</b></p></div>")
+        elif a.meets_spec and not a.changes:
             parts.append("<div style='background:#e8f4ec; border:2px solid #1f9d55; padding:8px;'>"
                          "<p style='font-size:13pt; color:#1f7a44'><b>✔ הציר עומד בדרישות: לא ממשיכים לכייל.</b></p>"
                          "<p>השגיאה בזמן נסיעה ובעצירה בתוך החלון המותר. אפשר לשמור בבקר (SV) ולעבור לציר הבא.</p></div>")
