@@ -538,22 +538,27 @@ BACKLASH_LIMIT_DEG = 0.05
 
 
 def apply_backlash(adv: Advice, bl, limit_deg: float = BACKLASH_LIMIT_DEG) -> None:
-    """Report the backlash measured at the direction reversals, and alert when it is above the limit."""
+    """Report the backlash (dead zone) measured at the torque reversals, alert when it is above the limit, and show
+    the elastic windup apart: it is lost motion too, but not play, and adjusting the gear backlash does not change it."""
     if bl is None or not bl.ok:
         return
     n = len(bl.travels)
     if bl.counts_per_deg:
         mean_d, max_d = bl.deg(bl.mean), bl.deg(bl.max)
         mark = "✘" if max_d > limit_deg else "✔"
-        adv.findings.insert(0, f"{mark} משחק (backlash) בין המנוע לעומס: {max_d:.4f}° ({bl.max:.0f} ספירות, "
-                               f"{max_d * 60:.2f} דקות-קשת), הכי גדול מתוך {n} היפוכי מומנט (ממוצע {mean_d:.4f}°). "
-                               f"מותר {limit_deg:g}°.")
+        text = (f"{mark} משחק (backlash, שטח מת) בין המנוע לעומס: {max_d:.4f}° ({bl.max:.0f} ספירות, "
+                f"{max_d * 60:.2f} דקות-קשת), הכי גדול מתוך {n} היפוכי מומנט (ממוצע {mean_d:.4f}°). מותר {limit_deg:g}°.")
+        if bl.windups:
+            w = bl.deg(bl.windup_max)
+            text += (f" בנוסף, תחת מומנט התמסורת מתפתלת (גמישות, windup) עד {w:.4f}°: זה לא משחק, והוא לא משתנה "
+                     "בכיוון הבקלש; הוא תלוי בתאוצה ובקשיחות של הגיר, הצימוד והציר.")
+        adv.findings.insert(0, text)
         if max_d > limit_deg:
             adv.warnings.insert(0, f"{BACKLASH_ALERT}: נמדד {max_d:.4f}° (מותר {limit_deg:g}°). זו בעיה מכנית (תמסורת, גיר, צימוד): "
                                    "הגברים לא יתקנו אותה, ומשחק גדול גורם לרעידות ולחיכוך ליד המטרה. בודקים את המכניקה.")
     else:
-        adv.findings.insert(0, f"משחק (backlash): {bl.mean:.0f} ספירות בממוצע מתוך {n} היפוכי כיוון. כדי להמיר למעלות ולהשוות "
-                            "ל-0.05° צריך PA[43] ב-PRM.")
+        adv.findings.insert(0, f"משחק (backlash): {bl.mean:.0f} ספירות בממוצע מתוך {n} היפוכי מומנט. כדי להמיר למעלות ולהשוות "
+                               "ל-0.05° צריך PA[43] ב-PRM.")
 
 
 BACKLASH_ALERT = "משחק גדול מהמותר"

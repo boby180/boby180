@@ -89,8 +89,9 @@ class TachoMetrics:
 class BacklashMetrics:
     """Backlash between the motor (tacho) and the load (encoder): at each change of direction, how far the
     motor turns before the load moves. Counts are encoder counts (the tacho scaled by Veldt / AnlgInp)."""
-    travels: list = field(default_factory=list)    # one per direction reversal, in counts
+    travels: list = field(default_factory=list)    # backlash (dead zone) per reversal, in counts
     times: list = field(default_factory=list)      # when each reversal started [s]
+    windups: list = field(default_factory=list)    # lost motion under torque (backlash + elasticity), counts
     counts_per_deg: float | None = None
 
     @property
@@ -107,6 +108,10 @@ class BacklashMetrics:
     @property
     def max(self) -> float:
         return float(np.max(self.travels)) if self.travels else 0.0
+
+    @property
+    def windup_max(self) -> float:
+        return float(np.max(self.windups)) if self.windups else 0.0
 
 
 @dataclass
@@ -394,11 +399,16 @@ def tacho_metrics(vel: np.ndarray, tacho: np.ndarray, max_lag: int = 40, t: np.n
         for side, sel in (("ratio_pos", mov & (v > 0)), ("ratio_neg", mov & (v < 0))):
             if sel.sum() >= 10 and np.dot(a0[sel], a0[sel]) > 0:
                 setattr(m, side, float(np.dot(v[sel], a0[sel]) / np.dot(a0[sel], a0[sel])))
-    x, y = a - a.mean(), v - v.mean()
+    # lag: the shift that best lines the sensor up with the encoder speed while moving (a cross-correlation over the
+    # whole recording, standstill included, gave spurious +-14 samples)
+    movl = np.abs(v) > 0.05 * (np.max(np.abs(v)) or 1.0)
     L = min(max_lag, n // 4)
-    lags = range(-L, L + 1)
-    cc = [float(np.dot(x[L + k:n - L + k], y[L:n - L])) for k in lags]
-    m.lag_samples = list(lags)[int(np.argmax(cc))]
+    idx = np.flatnonzero(movl)
+    idx = idx[(idx >= L) & (idx < n - L)]
+    if len(idx) > 10:
+        g = m.gain or 1.0
+        errs = [float(np.mean(((a[idx + k] - m.offset) / g - v[idx]) ** 2)) for k in range(-L, L + 1)]
+        m.lag_samples = int(np.argmin(errs)) - L
     m.ok = True
     return m
 
@@ -429,7 +439,7 @@ def backlash_metrics(t: np.ndarray, pos: np.ndarray, tacho: np.ndarray, ratio: f
     usually change during the deceleration (the motor brakes), not at the start of the next move.
     Without the command: fall back to the start of each reversed move."""
     if cmd is not None and vel is not None:
-        return _backlash_by_torque(t, tacho, ratio, offset, cmd, vel, counts_per_deg)
+        return _backlash_by_torque(t, tacho, ratio, offset, cmd, vel, counts_per_deg, pos=pos)
     m = BacklashMetrics(counts_per_deg=counts_per_deg)
     n = min(len(t), len(pos), len(tacho))
     if n < 50 or not ratio:
@@ -469,26 +479,49 @@ def backlash_metrics(t: np.ndarray, pos: np.ndarray, tacho: np.ndarray, ratio: f
     return m
 
 
-def _backlash_by_torque(t, tacho, ratio, offset, cmd, vel, counts_per_deg, pre=0.3, before=0.05, after=0.30,
-                        level=0.1) -> BacklashMetrics:
+def _backlash_by_torque(t, tacho, ratio, offset, cmd, vel, counts_per_deg, pos=None, pre=0.3, before=0.05,
+                        after=0.30, level=0.1, move_counts=2.0) -> BacklashMetrics:
+    """At every torque reversal (the driver command changes sign):
+    - backlash = the dead zone: from the zero crossing of the command until the load (encoder) departs by
+      'move_counts' from where it was heading, how far the motor (tacho) turned beyond the load's own motion;
+    - windup = the whole lost motion over a third of a second (backlash + the elastic twist of the drive train
+      under the new torque). With a stiff, play-free drive both are ~0; a soft drive has windup without backlash."""
     m = BacklashMetrics(counts_per_deg=counts_per_deg)
     n = min(len(t), len(tacho), len(cmd), len(vel))
     if n < 100 or not ratio:
         return m
     t = t[:n].astype(float)
-    r = (tacho[:n].astype(float) - offset) * ratio - vel[:n].astype(float)      # motor speed - load speed
+    sp = (tacho[:n].astype(float) - offset) * ratio
+    v = vel[:n].astype(float)
+    r = sp - v                                                               # motor speed - load speed
     c = cmd[:n].astype(float)
+    p_ = None if pos is None else pos[:n].astype(float)
     lvl = level * (np.percentile(np.abs(c), 95) or 1.0)
     sign = np.where(c > lvl, 1, np.where(c < -lvl, -1, 0))
     dt = float(np.median(np.diff(t))) or 1e-3
+    k = max(1, int(round(0.03 / dt)))
     last, last_i, last_event = 0, 0, -1e9
     for i in np.flatnonzero(sign):
         if last and sign[i] != last:
-            t0 = t[last_i]                                   # the command was last clearly on the old side here
+            t0 = t[last_i]
             a, b, e = np.searchsorted(t, [t0 - pre, t0 - before, t0 + after])
             if 0 < a < b < e < n and t0 - last_event > pre + after:
                 bias = float(np.mean(r[a:b]))
-                m.travels.append(abs(float(np.sum(r[b:e] - bias)) * dt))
+                windup = abs(float(np.sum(r[b:e] - bias)) * dt)
+                dead = windup
+                if p_ is not None:
+                    z = last_i + int(np.argmax(np.sign(c[last_i:i + 1]) != last))     # the command crosses zero
+                    new_dir = -last
+                    if z - k >= 0:
+                        slope = (p_[z] - p_[z - k]) / k                             # where the load was heading
+                        span = min(n - z, int(round(1.0 / dt)))
+                        dev = (p_[z:z + span] - (p_[z] + slope * np.arange(span))) * new_dir
+                        hit = np.flatnonzero(dev >= move_counts)
+                        if len(hit):
+                            q = z + int(hit[0])
+                            dead = max(0.0, float(np.sum(sp[z:q] - slope / dt)) * dt * new_dir)
+                m.travels.append(dead)
+                m.windups.append(windup)
                 m.times.append(float(t0))
                 last_event = t0
         last, last_i = sign[i], i

@@ -796,3 +796,29 @@ def test_backlash_at_torque_reversal_during_deceleration():
         tacho[k] += np.sign(-cmd[np.searchsorted(t, t0) - 5]) * 65 / 0.05
     bl = backlash_metrics(t, np.zeros_like(t), tacho, ratio=1.0, cmd=cmd, vel=vel, counts_per_deg=4551.1111)
     assert len(bl.travels) >= 2 and abs(bl.max - 65) < 5 and abs(bl.deg(bl.max) - 0.0143) < 0.002
+
+
+def _reversal_with(dead_counts, windup_counts):
+    """A move after standstill: the motor turns 'dead_counts' with the load still (play), then the load follows
+    with an elastic lag of 'windup_counts' that builds up during the acceleration."""
+    dt = 0.003
+    t = np.arange(0, 3, dt)
+    cmd = np.where(t < 1.0, -800.0, 2500.0)                     # holding torque, then the move (torque reverses at 1 s)
+    motor_v = np.clip((t - 1.0) * 100000, 0, 30000)            # the motor accelerates from 1 s
+    motor_p = np.cumsum(motor_v) * dt
+    after_play = np.clip(motor_p - dead_counts, 0, None)           # the load moves only once the play is taken up
+    lag = np.minimum(windup_counts, 0.5 * after_play)              # elastic twist: the load follows at once, lagging
+    load_p = after_play - lag
+    vel = np.gradient(load_p, t)
+    return t, load_p, motor_v, vel, cmd
+
+
+def test_backlash_is_the_dead_zone_and_windup_is_apart():
+    from tune4164.analysis import backlash_metrics
+    cpd = 1536.0477
+    t, pos, tacho, vel, cmd = _reversal_with(dead_counts=0, windup_counts=350)      # x2/x3: elastic, no play
+    bl = backlash_metrics(t, pos, tacho, 1.0, cmd=cmd, vel=vel, counts_per_deg=cpd)
+    assert bl.deg(bl.max) < 0.01 and bl.deg(bl.windup_max) > 0.15
+    t, pos, tacho, vel, cmd = _reversal_with(dead_counts=150, windup_counts=0)      # real play: 0.1 degree
+    bl = backlash_metrics(t, pos, tacho, 1.0, cmd=cmd, vel=vel, counts_per_deg=cpd)
+    assert abs(bl.deg(bl.max) - 0.098) < 0.01
