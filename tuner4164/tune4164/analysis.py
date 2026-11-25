@@ -685,3 +685,43 @@ def looks_like_push(t: np.ndarray, pos: np.ndarray, tacho: np.ndarray | None,
     mask = _motor_turning(t, np.asarray(tacho, float))
     dp = np.abs(np.diff(pos, prepend=pos[0]))
     return float(np.sum(dp[~mask])) > 0.5 * float(np.sum(dp)) and float(np.mean(mask)) < 0.5
+
+
+@dataclass
+class GearMetrics:
+    """Electronic gearing: the analysed (slave) axis follows the encoder of another (master) axis."""
+    master: str = ""
+    ratio: float = 0.0                 # slave travel / master travel
+    sync_max: float = 0.0              # largest difference from the ideal follower, counts
+    sync_rms: float = 0.0
+    master_ripple_pct: float | None = None   # speed ripple of the master at constant speed, % of the speed
+    counts_per_deg: float | None = None
+
+    @property
+    def ok(self) -> bool:
+        return self.ratio != 0.0
+
+    def deg(self, c: float) -> float | None:
+        return c / self.counts_per_deg if self.counts_per_deg else None
+
+
+def gear_metrics(t, master_pos, slave_pos, master_vel=None, master="", counts_per_deg=None) -> GearMetrics:
+    m = GearMetrics(master=master, counts_per_deg=counts_per_deg)
+    mp, sp = np.asarray(master_pos, float), np.asarray(slave_pos, float)
+    if len(mp) < 50 or np.ptp(mp) < 100:
+        return m
+    k, c = np.polyfit(mp, sp, 1)
+    res = sp - (k * mp + c)
+    m.ratio, m.sync_max, m.sync_rms = float(k), float(np.max(np.abs(res))), float(np.sqrt(np.mean(res ** 2)))
+    if master_vel is not None:
+        v = np.asarray(master_vel, float)
+        top = float(np.max(np.abs(v))) or 1.0
+        cru = np.abs(v) > 0.85 * top
+        if cru.sum() > 50:
+            ks = max(1, int(0.02 / (float(np.median(np.diff(t))) or 1e-3)))
+            vs = np.convolve(v, np.ones(ks) / ks, mode="same")
+            ripple = [np.std(vs[cru & (np.sign(v) == s)]) / np.mean(np.abs(vs[cru & (np.sign(v) == s)]))
+                      for s in (1, -1) if (cru & (np.sign(v) == s)).sum() > 50]
+            if ripple:
+                m.master_ripple_pct = float(100 * 1.41 * max(ripple))
+    return m

@@ -49,13 +49,28 @@ class Recording:
 
     def guess(self, role: str) -> int | None:
         """Best column index for a role ("reference", "actual", ...), from the vector names.
-        Shell names glue the axis letter to the name (YPos, YVeldt, YAnlgInp), so it is dropped."""
-        for i, name in enumerate(self.names):
-            if i == self.time_column:
-                continue
-            if _role_of(name) == role:
-                return i
+        Shell names glue the axis letter to the name (YPos, YVeldt, YAnlgInp), so it is dropped. When the recording
+        mixes axes (e.g. XPos of a gear master with the Y vectors), the column of the analysed axis wins."""
+        found = [i for i, name in enumerate(self.names) if i != self.time_column and _role_of(name) == role]
+        if not found:
+            return None
+        main = self.main_axis
+        same = [i for i in found if _axis_of(self.names[i]) == main]
+        return same[0] if main and same else found[0]
+
+    @property
+    def main_axis(self) -> str | None:
+        """The analysed axis: the one of the position error / desired position / driver command vectors."""
+        for role in ("error", "reference", "command", "velocity_ref", "tacho"):
+            for i, name in enumerate(self.names):
+                if i != self.time_column and _role_of(name) == role and (a := _axis_of(name)):
+                    return a
         return None
+
+
+def _axis_of(name: str) -> str | None:
+    m = re.match(r"^([XYZWEFGHUV])(?=[A-Z])", name.strip())
+    return m.group(1) if m else None
 
 
 def _role_of(name: str) -> str | None:

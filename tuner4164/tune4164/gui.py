@@ -26,7 +26,7 @@ from .loopguard import best_run, guard
 from . import help as helpkb
 from .history import (History, advice_fields, compare, extract_run, fingerprint, load_run, make_entry, other_unit,
                       run_document, step_back)
-from .analysis import (Analysis, backlash_metrics, command_metrics, looks_like_push, move_metrics, moving_from_velocity,
+from .analysis import (Analysis, backlash_metrics, command_metrics, gear_metrics, looks_like_push, move_metrics, moving_from_velocity,
                        push_backlash, step_metrics, tacho_metrics)
 from .prm import AXES, TUNING_KEYS, PrmFile, load_prm, parse_prm, prm_text
 from .recording import SAMPLE_TIME_4M, Recording, load_recording
@@ -617,6 +617,7 @@ class MainWindow(QMainWindow):
                                            counts_per_deg=pa43 / 10000 if pa43 else None, cmd=cmd, vel=vel)
         self.advice = advise(self.mode.currentText(), test, gains, an)
         apply_backlash(self.advice, an.backlash, self.req_backlash.value())
+        self._apply_gear(t, act)
         if remember:
             self._remember(test, gains, an, vref, vel)
         else:
@@ -625,6 +626,52 @@ class MainWindow(QMainWindow):
                                            "שמורה עם ה-PRM שהיה בזמן שלה.")
         self._plot(t, ref, act, pe, cmd, test, vel, tacho)
         self._show_advice()
+
+    def _master_columns(self):
+        """A gear recording: positions (and speeds) of another axis than the analysed one -> (letter, pos, vel)."""
+        if self.rec is None or not self.rec.main_axis:
+            return None
+        from .recording import _axis_of, _role_of
+        main = self.rec.main_axis
+        pos = vel = None
+        for i, n in enumerate(self.rec.names):
+            a = _axis_of(n)
+            if not a or a == main:
+                continue
+            role = _role_of(n)
+            if role == "actual" and pos is None:
+                pos = (a, self.rec.data[:, i].astype(float))
+            elif role == "velocity" and vel is None and (pos is None or pos[0] == a):
+                vel = self.rec.data[:, i].astype(float)
+        return None if pos is None else (pos[0], pos[1], vel)
+
+    def _apply_gear(self, t, act) -> None:
+        """Gearing (the axis follows another axis' encoder): how well it follows, and do not blame the axis' own loop
+        for a slow ripple that comes from the master's speed."""
+        mc = self._master_columns()
+        if mc is None or act is None:
+            return
+        letter, mpos, mvel = mc
+        axis = self.axis.currentText()
+        pa43 = self.prm.get(axis, "PA[43]")
+        gm = gear_metrics(t, mpos, act, mvel, letter, pa43 / 10000 if pa43 else None)
+        if not gm.ok:
+            return
+        size = f"{gm.sync_max:.0f} ספירות" + (f" ({gm.deg(gm.sync_max):.4f}°)" if gm.counts_per_deg else "")
+        txt = (f"גירינג: {axis} עוקב אחרי האנקודר של {letter} ביחס {gm.ratio:.4f}. ההפרש הגדול ביותר מעקיבה מושלמת: "
+               f"{size}, ובממוצע (RMS) {gm.sync_rms:.0f} ספירות.")
+        if gm.master_ripple_pct is not None:
+            txt += f" מהירות המסטר ({letter}) במהירות קבועה לא חלקה: אדווה של ±{gm.master_ripple_pct:.1f}%."
+        self.advice.findings.insert(0, txt)
+        slow = [c for c in self.advice.changes if c.reason.startswith("רעידה איטית בזמן הנסיעה")]
+        if slow and gm.master_ripple_pct is not None and gm.master_ripple_pct > 0.5:
+            self.advice.changes = [c for c in self.advice.changes if c not in slow]
+            if not self.advice.changes and self.advice.status == "change":
+                self.advice.status = "ok"
+            self.advice.findings.insert(1, f"הרעידה האיטית בשגיאה של {axis} לא באה מהלולאה של {axis}: היא עוקבת אחרי "
+                                           f"האדווה במהירות של המסטר {letter} (±{gm.master_ripple_pct:.1f}%), ולכן לא "
+                                           f"ממליצים להוריד KP. כדי לכייל את {axis} עצמו, מקליטים תנועת PTP רגילה של {axis} "
+                                           f"(בלי גירינג). את האדווה של {letter} בודקים בהקלטה של {letter}.")
 
     def _analyze_push(self, t, act, tacho, cmd, gains, an, remember) -> None:
         """Motor off, the slide pushed by hand from side to side: the gap the load crosses with the motor still."""

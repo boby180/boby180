@@ -886,3 +886,18 @@ def test_slow_commanded_move_is_not_a_push():
     tacho = vref + np.random.default_rng(2).normal(0, 150, len(t))
     assert not looks_like_push(t, pos, tacho, vref)
     assert not looks_like_push(t, pos, tacho)
+
+
+def test_gear_recording_picks_slave_axis_and_measures_sync():
+    from tune4164.analysis import gear_metrics
+    from tune4164.recording import Recording
+    t = np.arange(0, 10, 0.003)
+    xpos = 40000 * t
+    ypos = xpos + 50 * np.sin(2 * np.pi * 0.4 * t)
+    data = np.c_[xpos, ypos - 3, ypos, np.zeros_like(t), t]
+    rec = Recording(None, ["XPos", "YDesPos", "YPos", "YPosErr", "Time"], data, t, time_column=4)
+    assert rec.main_axis == "Y"
+    assert rec.names[rec.guess("actual")] == "YPos"
+    gm = gear_metrics(t, xpos, ypos, np.gradient(xpos, t), "X", 1536.0)
+    assert gm.ratio == pytest.approx(1.0, abs=1e-3)
+    assert gm.sync_max == pytest.approx(50, abs=3)
