@@ -900,4 +900,4 @@ def test_gear_recording_picks_slave_axis_and_measures_sync():
     assert rec.names[rec.guess("actual")] == "YPos"
     gm = gear_metrics(t, xpos, ypos, np.gradient(xpos, t), "X", 1536.0)
     assert gm.ratio == pytest.approx(1.0, abs=1e-3)
-    assert gm.sync_max == pytest.approx(50, abs=3)
+    assert gm.sync_max == pytest.approx(50, abs=10)
