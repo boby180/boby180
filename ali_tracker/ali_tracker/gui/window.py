@@ -269,10 +269,10 @@ class MainWindow(QMainWindow):
             if r.key == keep:
                 self.select_row(i)
         urgent = sum(self.advice_for(r, now).urgent for r in self.rows)
-        active = sum(not r.done for r in self.rows)
+        active = sum(not (r.done or r.status == DELIVERED) for r in self.rows)
         last = self.store.get_meta("last_sync")
         when = _ago(datetime.fromisoformat(last)) if last else "עוד לא"
-        self.status.showMessage(f"{active} חבילות פתוחות · {urgent} דורשות פעולה · סנכרון אחרון: {when}")
+        self.status.showMessage(f"{active} עוד לא התקבלו · {urgent} דורשות פעולה · סנכרון אחרון: {when}")
         self._update_banner()
         if self.table.rowCount() and not self.table.selectedItems():
             self.select_row(0)
@@ -399,7 +399,6 @@ class MainWindow(QMainWindow):
         box.setWindowTitle("הודעה למוכר")
         box.setText("ההודעה הועתקה ✓\n\nבדף ההזמנה שנפתח לוחצים «Contact seller», "
                     "מדביקים (Ctrl+V) ושולחים.\n\nשלחת את ההודעה?")
-        box.setDetailedText(seller_message(r))
         sent = box.addButton("שלחתי", QMessageBox.YesRole)
         box.addButton("עוד לא", QMessageBox.NoRole)
         box.exec()
