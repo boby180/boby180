@@ -64,6 +64,8 @@ class Row:
     done: bool
     total: str = ""
     totals: dict[str, str] = field(default_factory=dict)
+    ordered_at: datetime | None = None      # המייל הראשון על ההזמנה (בפועל: יום ההזמנה)
+    messaged_at: datetime | None = None     # מתי סימנת ששלחת הודעה למוכר
 
 
 class Store:
@@ -162,6 +164,13 @@ class Store:
             self.conn.execute(f"UPDATE {table} SET status=?, status_text=? WHERE {col}=?",
                               (code, text, key))
 
+    def set_messaged(self, row: Row, when: datetime | None) -> None:
+        if when is None:
+            self.conn.execute("DELETE FROM meta WHERE key=?", ("messaged:" + row.key,))
+            self.conn.commit()
+        else:
+            self.set_meta("messaged:" + row.key, _iso(when))
+
     def set_done(self, row: Row, done: bool) -> None:
         table, col = ("packages", "tracking") if row.kind == "package" else ("orders", "order_id")
         self.conn.execute(f"UPDATE {table} SET done=? WHERE {col}=?", (int(done), row.key))
@@ -174,6 +183,8 @@ class Store:
         for t, o in self.conn.execute("SELECT tracking, order_id FROM package_orders ORDER BY order_id"):
             links.setdefault(t, []).append(o)
         linked = {o for os_ in links.values() for o in os_}
+        messaged = {k[len("messaged:"):]: _dt(v) for k, v in self.conn.execute(
+            "SELECT key, value FROM meta WHERE key LIKE 'messaged:%'")}
         out: list[Row] = []
 
         for p in self.conn.execute("SELECT * FROM packages"):
@@ -189,9 +200,11 @@ class Store:
                 if o is not None:
                     status, text = o["status"], o["status_text"]
             totals = {oid: orders[oid]["total"] for oid in oids if oid in orders and orders[oid]["total"]}
+            dates = [orders[x]["first_seen"] for x in oids if x in orders] or [p["first_seen"]]
             out.append(Row("package", p["tracking"], p["tracking"], oids, items, status, text,
                            _dt(p["last_update"]), _dt(p["first_seen"]), bool(p["done"]),
-                           " + ".join(totals.values()), totals))
+                           " + ".join(totals.values()), totals, _dt(min(dates)),
+                           messaged.get(p["tracking"])))
 
         for oid, o in orders.items():
             if oid in linked:
@@ -199,6 +212,7 @@ class Store:
             out.append(Row("order", oid, "", [oid], [Item(**i) for i in json.loads(o["items"])],
                            o["status"], o["status_text"], _dt(o["last_update"]),
                            _dt(o["first_seen"]), bool(o["done"]), o["total"],
-                           {oid: o["total"]} if o["total"] else {}))
+                           {oid: o["total"]} if o["total"] else {}, _dt(o["first_seen"]),
+                           messaged.get(oid)))
         out.sort(key=lambda r: r.last_update or r.first_seen, reverse=True)
         return out

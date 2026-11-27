@@ -113,6 +113,33 @@ def test_done_and_advice(tmp_path):
     st.close()
 
 
+def test_ordered_at_and_late_shipment(tmp_path):
+    st = _load(tmp_path)
+    rows = {r.key: r for r in st.rows()}
+    earbuds = rows["RS0000000001Y"]
+    # החבילה הופיעה לפני 22 ימים, אבל ההזמנה עצמה לפני 30
+    assert earbuds.ordered_at == NOW - timedelta(days=30)
+    assert rows["1000000000000004"].ordered_at == NOW - timedelta(days=10)
+
+    def adv(r, **kw):
+        return status.advice(r.status, r.last_update, r.done, NOW, ordered_at=r.ordered_at, **kw)
+
+    assert "הודעה למוכר" in adv(earbuds, late_days=30).text and adv(earbuds, late_days=30).urgent
+    assert "הודעה למוכר" not in adv(earbuds, late_days=31).text
+    assert "הודעה למוכר" not in adv(earbuds, late_days=0).text           # כבוי
+    assert adv(rows["AP00000000000003"], late_days=5).text.startswith("ללכת לאסוף")   # כבר בישראל
+
+    st.set_messaged(earbuds, NOW - timedelta(days=2))
+    earbuds = {r.key: r for r in st.rows()}["RS0000000001Y"]
+    a = adv(earbuds, late_days=30, messaged_at=earbuds.messaged_at)
+    assert not a.urgent and "לחכות" in a.text
+    a = adv(earbuds, late_days=30, messaged_at=NOW - timedelta(days=status.FOLLOWUP_DAYS))
+    assert a.urgent and "מחלוקת" in a.text
+    st.set_messaged(earbuds, None)
+    assert {r.key: r for r in st.rows()}["RS0000000001Y"].messaged_at is None
+    st.close()
+
+
 def test_secret_roundtrip():
     assert unprotect(protect("abcd efgh")) == "abcd efgh"
     assert unprotect("") == "" and protect("") == ""

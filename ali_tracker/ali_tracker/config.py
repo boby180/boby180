@@ -20,6 +20,7 @@ class Config:
     app_password: str = ""          # מוצפן (secret.protect)
     days_back: int = 120
     auto_sync_minutes: int = 30
+    late_days: int = 30             # זמן משלוח צפוי מההזמנה; אחריו מציעים לשלוח הודעה למוכר (0 = כבוי)
 
     @property
     def db_path(self) -> Path:

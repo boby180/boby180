@@ -41,6 +41,8 @@ LABEL = {
 STALE_DAYS = 20          # בלי עדכון יותר מזה = כנראה תקוע
 NOT_SHIPPED_DAYS = 7     # המוכר לא שלח יותר מזה
 DELIVERED_QUIET_DAYS = 14  # אחרי זה כבר לא מציקים על חבילה שנמסרה
+FOLLOWUP_DAYS = 5        # אחרי הודעה למוכר: כמה ימים לחכות לתשובה לפני שפותחים מחלוקת
+LATE_STAGES = (CONFIRMED, SHIPPED, TRANSIT, CUSTOMS, "")   # שלבים שבהם חבילה יכולה "לאחר"
 
 
 def classify(text: str) -> str:
@@ -57,9 +59,24 @@ class Advice:
     urgent: bool        # דורש פעולה ממך
 
 
+def days_ago(n: int) -> str:
+    return "היום" if n <= 0 else ("אתמול" if n == 1 else f"לפני {n} ימים")
+
+
+def is_late(status: str, done: bool, ordered_at: datetime | None, late_days: int,
+            now: datetime | None = None) -> bool:
+    """עבר זמן המשלוח הצפוי מאז ההזמנה, והחבילה עוד לא הגיעה לישראל."""
+    if done or late_days <= 0 or ordered_at is None or status not in LATE_STAGES:
+        return False
+    return ((now or datetime.now(timezone.utc)) - ordered_at).days >= late_days
+
+
 def advice(status: str, status_at: datetime | None, done: bool,
-           now: datetime | None = None) -> Advice:
-    """מה צריך לעשות עכשיו עם החבילה."""
+           now: datetime | None = None, *, ordered_at: datetime | None = None,
+           late_days: int = 0, messaged_at: datetime | None = None) -> Advice:
+    """מה צריך לעשות עכשיו עם החבילה.
+
+    late_days: זמן המשלוח הצפוי מההזמנה (0 = לא לבדוק). messaged_at: מתי נשלחה הודעה למוכר."""
     if done:
         return Advice("הכול בסדר, אין מה לעשות", False)
     now = now or datetime.now(timezone.utc)
@@ -72,6 +89,15 @@ def advice(status: str, status_at: datetime | None, done: bool,
         return Advice("לבדוק שהמוצר תקין, לאשר קבלה באלי אקספרס ולסמן «קיבלתי»", True)
     if status == PROBLEM:
         return Advice("לבדוק את פרטי המעקב, ואם צריך לפנות למוכר או לפתוח מחלוקת", True)
+    if is_late(status, done, ordered_at, late_days, now):
+        age = (now - ordered_at).days
+        if messaged_at is None:
+            return Advice(f"עבר זמן המשלוח ({age} ימים מההזמנה): לשלוח הודעה למוכר", True)
+        since = (now - messaged_at).days
+        if since < FOLLOWUP_DAYS:
+            return Advice(f"עבר זמן המשלוח. ההודעה למוכר נשלחה {days_ago(since)}: לחכות לתשובה", False)
+        return Advice(f"ההודעה למוכר נשלחה {days_ago(since)} והחבילה עוד לא הגיעה: "
+                      "לפתוח מחלוקת לפני שתם זמן ההגנה", True)
     if status == CONFIRMED and days >= NOT_SHIPPED_DAYS:
         return Advice(f"המוכר לא שלח כבר {days} ימים: לשלוח לו הודעה", True)
     if status in (SHIPPED, TRANSIT, CUSTOMS) and days >= STALE_DAYS:

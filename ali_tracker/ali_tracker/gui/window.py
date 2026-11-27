@@ -4,7 +4,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from PySide6.QtCore import QSize, Qt, QThreadPool, QTimer, QUrl
-from PySide6.QtGui import QColor, QDesktopServices, QFont, QPixmap
+from PySide6.QtGui import QColor, QDesktopServices, QFont, QGuiApplication, QPixmap
 from PySide6.QtWidgets import (QAbstractItemView, QComboBox, QFrame, QGridLayout, QHBoxLayout,
                                QHeaderView, QLabel, QLineEdit, QMainWindow, QMessageBox,
                                QPushButton, QScrollArea, QSplitter, QTableWidget,
@@ -12,22 +12,34 @@ from PySide6.QtWidgets import (QAbstractItemView, QComboBox, QFrame, QGridLayout
 
 from ..config import Config
 from ..secret import unprotect
-from ..status import DELIVERED, LABEL, advice
+from ..status import DELIVERED, LABEL, Advice, advice, days_ago, is_late
 from ..store import Row, Store
 from .settings import SettingsDialog
 from .images import ImageLoader
 from .workers import SyncJob, SyncSignals
 
-COLUMNS = ["מספר מעקב", "מה בפנים", "סטטוס", "מה לעשות", "עדכון אחרון", "ימים"]
-FILTERS = [("פעילות", "active"), ("דורשות פעולה", "urgent"), ("הכול", "all")]
+COLUMNS = ["מספר מעקב", "מה בפנים", "סטטוס", "מה לעשות", "עדכון אחרון", "ימים מההזמנה"]
+# הראשון הוא ברירת המחדל: בלי החבילות שכבר התקבלו
+FILTERS = [("לא התקבלו", "open"), ("דורשות פעולה", "urgent"), ("הכול", "all")]
 URGENT_COLOR = QColor("#e67e22")
 
 
 def _ago(d: datetime | None) -> str:
-    if d is None:
-        return ""
-    days = (datetime.now(timezone.utc) - d).days
-    return "היום" if days <= 0 else ("אתמול" if days == 1 else f"לפני {days} ימים")
+    return "" if d is None else days_ago((datetime.now(timezone.utc) - d).days)
+
+
+def seller_message(row: Row, now: datetime | None = None) -> str:
+    """הודעה מוכנה למוכר (באנגלית) על חבילה שעבר זמן המשלוח שלה."""
+    now = now or datetime.now(timezone.utc)
+    age = (now - (row.ordered_at or row.first_seen)).days
+    orders = ", ".join(row.order_ids) or row.key
+    track = f" (tracking number {row.tracking})" if row.tracking else ""
+    return (f"Hello,\n"
+            f"My order {orders}{track} was placed {age} days ago and I still have not received it. "
+            f"The expected delivery time has passed.\n"
+            f"Could you please check what is happening with the shipment and let me know "
+            f"when it will arrive? If it cannot arrive soon, I would like a refund.\n"
+            f"Thank you.")
 
 
 def ltr(text: str) -> str:
@@ -220,13 +232,9 @@ class MainWindow(QMainWindow):
         now = datetime.now(timezone.utc)
         out = []
         for r in self.rows:
-            a = advice(r.status, r.last_update, r.done, now)
-            if mode == "urgent" and not a.urgent:
+            if mode == "urgent" and not self.advice_for(r, now).urgent:
                 continue
-            if mode == "active" and r.done:
-                continue
-            if mode == "active" and r.status == DELIVERED and r.last_update \
-                    and (now - r.last_update).days > 45:
+            if mode == "open" and (r.done or r.status == DELIVERED):
                 continue
             if q:
                 hay = " ".join([r.tracking, *r.order_ids, *(i.name + " " + i.sku for i in r.items)]).lower()
@@ -244,8 +252,8 @@ class MainWindow(QMainWindow):
         bold.setBold(True)
         self.table.setRowCount(len(rows))
         for i, r in enumerate(rows):
-            a = advice(r.status, r.last_update, r.done, now)
-            days = (now - r.first_seen).days
+            a = self.advice_for(r, now)
+            days = (now - (r.ordered_at or r.first_seen)).days
             values = [r.tracking or "עדיין אין", summary(r),
                       "התקבל ✓" if r.done else LABEL.get(r.status, r.status_text or "לא ידוע"),
                       a.text, _ago(r.last_update), str(days)]
@@ -260,7 +268,7 @@ class MainWindow(QMainWindow):
                 self.table.setItem(i, c, item)
             if r.key == keep:
                 self.select_row(i)
-        urgent = sum(advice(r.status, r.last_update, r.done, now).urgent for r in self.rows)
+        urgent = sum(self.advice_for(r, now).urgent for r in self.rows)
         active = sum(not r.done for r in self.rows)
         last = self.store.get_meta("last_sync")
         when = _ago(datetime.fromisoformat(last)) if last else "עוד לא"
@@ -288,6 +296,10 @@ class MainWindow(QMainWindow):
             self.store.set_meta("seller_msg_seen", self.store.get_meta("seller_msg_at"))
             self.show_message("")
 
+    def advice_for(self, r: Row, now: datetime | None = None) -> Advice:
+        return advice(r.status, r.last_update, r.done, now, ordered_at=r.ordered_at,
+                      late_days=self.cfg.late_days, messaged_at=r.messaged_at)
+
     def select_row(self, i: int) -> None:
         """QTableWidget.selectRow לא בוחר כלום כשהממשק מימין לשמאל, לכן בוחרים דרך setCurrentCell."""
         self.table.setCurrentCell(i, 0)
@@ -314,7 +326,7 @@ class MainWindow(QMainWindow):
                            else "בחר חבילה מהטבלה.")
             lay.addWidget(empty)
             return
-        a = advice(r.status, r.last_update, r.done)
+        a = self.advice_for(r)
         title = QLabel(f"<b style='font-size:14pt'>{r.tracking or 'הזמנה ' + r.key}</b> &nbsp; "
                        f"{LABEL.get(r.status, '')} "
                        f"<span style='color:gray'>({r.status_text})</span>" if r.status_text else
@@ -359,6 +371,11 @@ class MainWindow(QMainWindow):
         for oid in r.order_ids[:3]:
             self._link_button(btns, f"פתח הזמנה …{oid[-5:]}",
                               f"https://www.aliexpress.com/p/order/detail.html?orderId={oid}")
+        if is_late(r.status, r.done, r.ordered_at, self.cfg.late_days):
+            msg = QPushButton("✉ הודעה למוכר" if r.messaged_at is None else "✉ הודעה נוספת למוכר")
+            msg.setToolTip("מעתיק הודעה מוכנה באנגלית ופותח את ההזמנה באלי אקספרס")
+            msg.clicked.connect(lambda: self.message_seller(r))
+            btns.addWidget(msg)
         done = QPushButton("בטל «קיבלתי»" if r.done else "✓ קיבלתי ובדקתי")
         done.clicked.connect(lambda: self._toggle_done(r))
         btns.addStretch()
@@ -371,6 +388,25 @@ class MainWindow(QMainWindow):
         b = QPushButton(text)
         b.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(url)))
         layout.addWidget(b)
+
+    def message_seller(self, r: Row) -> None:
+        """אלי אקספרס לא מאפשרת לתוכנה לשלוח הודעה בעצמה, אז מכינים הכול ונשאר רק להדביק."""
+        QGuiApplication.clipboard().setText(seller_message(r))
+        if r.order_ids:
+            QDesktopServices.openUrl(QUrl(
+                f"https://www.aliexpress.com/p/order/detail.html?orderId={r.order_ids[0]}"))
+        box = QMessageBox(self)
+        box.setWindowTitle("הודעה למוכר")
+        box.setText("ההודעה הועתקה ✓\n\nבדף ההזמנה שנפתח לוחצים «Contact seller», "
+                    "מדביקים (Ctrl+V) ושולחים.\n\nשלחת את ההודעה?")
+        box.setDetailedText(seller_message(r))
+        sent = box.addButton("שלחתי", QMessageBox.YesRole)
+        box.addButton("עוד לא", QMessageBox.NoRole)
+        box.exec()
+        if box.clickedButton() is sent:
+            self.store.set_messaged(r, datetime.now(timezone.utc))
+            self.refresh()
+            self.show_details()
 
     def _toggle_done(self, r: Row) -> None:
         self.store.set_done(r, not r.done)

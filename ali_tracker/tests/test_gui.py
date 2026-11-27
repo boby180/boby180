@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -44,6 +45,61 @@ def test_window(tmp_path, monkeypatch):
     assert w._selected_key() == "AP00000000000003"
     texts = " ".join(lbl.text() for lbl in w.details.findChildren(type(w.banner)))
     assert "נקודת האיסוף" in texts and "Sport Insoles" in texts
+    w.close()
+
+
+def test_received_hidden_by_default_and_days_column(tmp_path, monkeypatch):
+    cfg = Config(data_dir=str(tmp_path), auto_sync_minutes=0)
+    st = Store(cfg.db_path)
+    for subject, html, date, mid in samples.demo_mails():
+        st.apply(parse_mail(subject, html, date, mid))
+    st.set_done(next(r for r in st.rows() if r.key == "AP00000000000003"), True)
+    st.apply(parse_mail("Order 1000000000000002: how did it go?", "", datetime.now(timezone.utc),
+                        "<rev@x>"))                    # נמסר, עוד לא סומן «קיבלתי»
+    st.close()
+    monkeypatch.setattr(MainWindow, "_first_run", lambda self: None)
+    monkeypatch.setattr(MainWindow, "_load_image", lambda self, url, label: label.setText("img"))
+    app = QApplication.instance() or QApplication([])
+    w = MainWindow(cfg)
+    key = lambda i: w.table.item(i, 0).text().strip("\u202a\u202c")  # noqa: E731
+    assert w.filter.currentData() == "open"
+    shown = {key(i): w.table.item(i, 5).text() for i in range(w.table.rowCount())}
+    assert set(shown) == {"RS0000000001Y", "1000000000000004"}
+    assert shown["RS0000000001Y"] == "30" and shown["1000000000000004"] == "10"
+    assert w.table.horizontalHeaderItem(5).text() == "ימים מההזמנה"
+    w.filter.setCurrentIndex(2)                       # הכול
+    assert w.table.rowCount() == 4
+    w.close()
+
+
+def test_message_seller(tmp_path, monkeypatch):
+    from PySide6.QtGui import QDesktopServices, QGuiApplication
+    from PySide6.QtWidgets import QMessageBox, QPushButton
+
+    cfg = Config(data_dir=str(tmp_path), auto_sync_minutes=0, late_days=30)
+    st = Store(cfg.db_path)
+    for subject, html, date, mid in samples.demo_mails():
+        st.apply(parse_mail(subject, html, date, mid))
+    st.close()
+    opened = []
+    monkeypatch.setattr(MainWindow, "_first_run", lambda self: None)
+    monkeypatch.setattr(MainWindow, "_load_image", lambda self, url, label: label.setText("img"))
+    monkeypatch.setattr(QDesktopServices, "openUrl", lambda url: opened.append(url.toString()))
+    monkeypatch.setattr(QMessageBox, "exec", lambda self: 0)
+    monkeypatch.setattr(QMessageBox, "clickedButton",
+                        lambda self: next(b for b in self.buttons() if b.text() == "שלחתי"))
+    app = QApplication.instance() or QApplication([])
+    w = MainWindow(cfg)
+    rows = [w.table.item(i, 0).text().strip("\u202a\u202c") for i in range(w.table.rowCount())]
+    w.select_row(rows.index("RS0000000001Y"))
+    assert "לשלוח הודעה למוכר" in w.table.item(w.table.currentRow(), 3).text()
+    btn = next(b for b in w.details.findChildren(QPushButton) if "הודעה למוכר" in b.text())
+    btn.click()
+    text = QGuiApplication.clipboard().text()
+    assert "1000000000000001" in text and "RS0000000001Y" in text and "30 days" in text
+    assert opened and "orderId=1000000000000001" in opened[0]
+    assert "לחכות" in w.table.item(w.table.currentRow(), 3).text()
+    assert next(r for r in w.rows if r.key == "RS0000000001Y").messaged_at is not None
     w.close()
 
 
