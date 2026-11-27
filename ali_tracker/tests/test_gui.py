@@ -12,6 +12,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 pytest.importorskip("PySide6.QtWidgets", exc_type=ImportError)
 
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication
 
 from ali_tracker import samples
@@ -61,7 +62,7 @@ def test_received_hidden_by_default_and_days_column(tmp_path, monkeypatch):
     monkeypatch.setattr(MainWindow, "_load_image", lambda self, url, label: label.setText("img"))
     app = QApplication.instance() or QApplication([])
     w = MainWindow(cfg)
-    key = lambda i: w.table.item(i, 0).text().strip("\u202a\u202c")  # noqa: E731
+    key = lambda i: w.table.item(i, 0).data(Qt.UserRole)  # noqa: E731
     assert w.filter.currentData() == "open"
     shown = {key(i): w.table.item(i, 5).text() for i in range(w.table.rowCount())}
     assert set(shown) == {"RS0000000001Y", "1000000000000004"}
