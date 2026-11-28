@@ -7,7 +7,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from ali_tracker import samples, status
+from ali_tracker import money, samples, status
 from ali_tracker.parser import parse_mail
 from ali_tracker.secret import protect, unprotect
 from ali_tracker.store import Store
@@ -137,6 +137,38 @@ def test_ordered_at_and_late_shipment(tmp_path):
     assert a.urgent and "מחלוקת" in a.text
     st.set_messaged(earbuds, None)
     assert {r.key: r for r in st.rows()}["RS0000000001Y"].messaged_at is None
+    st.close()
+
+
+def test_order_total_without_price_class():
+    html = ("<table><tr><td>20mm Parachute Loop Strap...</td></tr></table>"
+            "<table><tr><td><span>Order total</span></td><td><span>₪12.65</span></td></tr></table>")
+    ev = parse_mail("Order 1124000000000001: order confirmed", html, NOW)
+    assert ev.orders[0].total == "₪12.65"
+
+
+def test_money():
+    assert money.amount("₪12.65") == 12.65 and money.amount("US $1,234.50") == 1234.5
+    assert money.amount("€7,50") == 7.5 and money.amount("") is None
+    assert money.to_ils("₪12.65", 3.7, 4.0) == (12.65, False)
+    assert money.to_ils("US $10", 3.7, 4.0) == (37.0, True)
+    assert money.to_ils("€10", 3.7, 4.0) == (40.0, True)
+    assert money.to_ils("12 RUB", 3.7, 4.0) is None
+    assert money.fmt(1234.5) == "₪1,234.50" and money.fmt(37, True) == "≈ ₪37.00"
+
+
+def test_item_prices(tmp_path):
+    st = _load(tmp_path)
+    rows = {r.key: r for r in st.rows()}
+    # שם המוצר במייל החבילה מקוצר יותר מבמייל ההזמנה, ועדיין מקבל את המחיר
+    assert rows["RS0000000001Y"].items[0].price == "US $30.40"
+    assert rows["AP00000000000003"].items[0].price == "₪18.90"
+    assert rows["1000000000000004"].items[0].price == "₪28.65"
+    # בהזמנה עם שני מוצרים אין מחיר לכל מוצר, רק להזמנה כולה
+    assert all(not i.price for i in rows["LP00000000000002"].items)
+    assert rows["LP00000000000002"].totals == {"1000000000000002": "₪47.80"}
+    assert [o for o, *_ in st.orders_since(NOW - timedelta(days=29))] == \
+        ["1000000000000003", "1000000000000002", "1000000000000004"]
     st.close()
 
 

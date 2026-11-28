@@ -49,6 +49,27 @@ def _dt(s: str | None) -> datetime | None:
     return datetime.fromisoformat(s) if s else None
 
 
+def _short(name: str) -> str:
+    return name.rstrip(".… ").lower()
+
+
+def _prices(items: list[Item], orders: list) -> None:
+    """נותן לכל מוצר את סכום ההזמנה שלו, כשהוא המוצר היחיד בהזמנה.
+
+    במיילים יש רק סכום לכל הזמנה, ואלי אקספרס בדרך כלל פותחת הזמנה נפרדת לכל מוצר.
+    השם במייל החבילה יכול להיות מקוצר יותר מבמייל ההזמנה, לכן משווים התחלות."""
+    single = []
+    for o in orders:
+        its = json.loads(o["items"])
+        if len(its) == 1 and o["total"]:
+            single.append((_short(its[0]["name"]), o["total"]))
+    for it in items:
+        n = _short(it.name)
+        it.price = next((t for s, t in single if s and n and (s.startswith(n) or n.startswith(s))), "")
+    if len(items) == 1 and not items[0].price and len(single) == 1 and len(orders) == 1:
+        items[0].price = single[0][1]
+
+
 @dataclass
 class Row:
     """שורה בטבלה: חבילה, או הזמנה שעוד אין לה מספר מעקב."""
@@ -164,6 +185,12 @@ class Store:
             self.conn.execute(f"UPDATE {table} SET status=?, status_text=? WHERE {col}=?",
                               (code, text, key))
 
+    def orders_since(self, since: datetime) -> list[tuple[str, str, str]]:
+        """(מספר הזמנה, סכום, טקסט הסטטוס) של ההזמנות מ-since והלאה."""
+        return [tuple(r) for r in self.conn.execute(
+            "SELECT order_id, total, status_text FROM orders WHERE first_seen >= ? ORDER BY first_seen",
+            (_iso(since),))]
+
     def set_messaged(self, row: Row, when: datetime | None) -> None:
         if when is None:
             self.conn.execute("DELETE FROM meta WHERE key=?", ("messaged:" + row.key,))
@@ -194,6 +221,7 @@ class Store:
                 for oid in oids:
                     if oid in orders:
                         items += [Item(**i) for i in json.loads(orders[oid]["items"])]
+            _prices(items, [orders[x] for x in oids if x in orders])
             status, text = p["status"], p["status_text"]
             if not status:                       # עוד אין סטטוס לחבילה: לוקחים מההזמנה
                 o = next((orders[x] for x in oids if x in orders and orders[x]["status"]), None)
@@ -209,7 +237,9 @@ class Store:
         for oid, o in orders.items():
             if oid in linked:
                 continue
-            out.append(Row("order", oid, "", [oid], [Item(**i) for i in json.loads(o["items"])],
+            items = [Item(**i) for i in json.loads(o["items"])]
+            _prices(items, [o])
+            out.append(Row("order", oid, "", [oid], items,
                            o["status"], o["status_text"], _dt(o["last_update"]),
                            _dt(o["first_seen"]), bool(o["done"]), o["total"],
                            {oid: o["total"]} if o["total"] else {}, _dt(o["first_seen"]),

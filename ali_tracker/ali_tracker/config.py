@@ -20,6 +20,8 @@ class Config:
     app_password: str = ""          # מוצפן (secret.protect)
     days_back: int = 120
     auto_sync_minutes: int = 30
+    usd_rate: float = 3.7           # שער להמרת מחירים בדולרים לשקלים
+    eur_rate: float = 4.0
     late_days: int = 30             # זמן משלוח צפוי מההזמנה; אחריו מציעים לשלוח הודעה למוכר (0 = כבוי)
 
     @property

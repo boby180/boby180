@@ -64,10 +64,10 @@ def test_received_hidden_by_default_and_days_column(tmp_path, monkeypatch):
     w = MainWindow(cfg)
     key = lambda i: w.table.item(i, 0).data(Qt.UserRole)  # noqa: E731
     assert w.filter.currentData() == "open"
-    shown = {key(i): w.table.item(i, 5).text() for i in range(w.table.rowCount())}
+    shown = {key(i): w.table.item(i, 6).text() for i in range(w.table.rowCount())}
     assert set(shown) == {"RS0000000001Y", "1000000000000004"}
     assert shown["RS0000000001Y"] == "30" and shown["1000000000000004"] == "10"
-    assert w.table.horizontalHeaderItem(5).text() == "ימים מההזמנה"
+    assert w.table.horizontalHeaderItem(6).text() == "ימים מההזמנה"
     w.filter.setCurrentIndex(2)                       # הכול
     assert w.table.rowCount() == 4
     w.close()
@@ -93,14 +93,46 @@ def test_message_seller(tmp_path, monkeypatch):
     w = MainWindow(cfg)
     rows = [w.table.item(i, 0).text().strip("\u202a\u202c") for i in range(w.table.rowCount())]
     w.select_row(rows.index("RS0000000001Y"))
-    assert "לשלוח הודעה למוכר" in w.table.item(w.table.currentRow(), 3).text()
+    assert "לשלוח הודעה למוכר" in w.table.item(w.table.currentRow(), 4).text()
     btn = next(b for b in w.details.findChildren(QPushButton) if "הודעה למוכר" in b.text())
     btn.click()
     text = QGuiApplication.clipboard().text()
     assert "1000000000000001" in text and "RS0000000001Y" in text and "30 days" in text
     assert opened and "orderId=1000000000000001" in opened[0]
-    assert "לחכות" in w.table.item(w.table.currentRow(), 3).text()
+    assert "לחכות" in w.table.item(w.table.currentRow(), 4).text()
     assert next(r for r in w.rows if r.key == "RS0000000001Y").messaged_at is not None
+    w.close()
+
+
+def test_prices_and_month_total(tmp_path, monkeypatch):
+    from datetime import timedelta
+
+    now = datetime(2026, 11, 29, 12, tzinfo=timezone.utc)   # הזמנה 3: 1.11, הזמנה 1: 30.10
+    cfg = Config(data_dir=str(tmp_path), auto_sync_minutes=0, usd_rate=3.7)
+    st = Store(cfg.db_path)
+    for subject, html, date, mid in samples.demo_mails(now):
+        st.apply(parse_mail(subject, html, date, mid))
+    st.apply(parse_mail("Order 1000000000000005: order confirmed",
+                        samples.order_mail("1000000000000005", [("Cable...", "1m", "x1")], "₪9.00"),
+                        now - timedelta(days=3), "<m10@x>"))
+    st.apply(parse_mail("Order 1000000000000005: order cancelled", "", now - timedelta(days=2), "<m11@x>"))
+    st.close()
+    monkeypatch.setattr(MainWindow, "_first_run", lambda self: None)
+    monkeypatch.setattr(MainWindow, "_load_image", lambda self, url, label: label.setText("img"))
+    app = QApplication.instance() or QApplication([])
+    w = MainWindow(cfg)
+    w.filter.setCurrentIndex(2)
+    price = {w.table.item(i, 0).data(Qt.UserRole): w.table.item(i, 2).text()
+             for i in range(w.table.rowCount())}
+    assert price["RS0000000001Y"] == "≈ ₪112.48"            # US $30.40 × 3.7
+    assert price["LP00000000000002"] == "₪47.80"
+    # נובמבר: הזמנות 2, 3, 4. הזמנה 1 מאוקטובר, והזמנה 5 בוטלה
+    assert w.month_total(now) == (pytest.approx(47.80 + 18.90 + 28.65), 3, False)
+    assert "הזמנות ב" in w.month_label.text()
+    keys = [w.table.item(i, 0).data(Qt.UserRole) for i in range(w.table.rowCount())]
+    w.select_row(keys.index("AP00000000000003"))
+    texts = " ".join(lbl.text() for lbl in w.details.findChildren(type(w.banner)))
+    assert "₪18.90" in texts
     w.close()
 
 

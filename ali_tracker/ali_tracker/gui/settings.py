@@ -2,8 +2,8 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import (QDialog, QDialogButtonBox, QFormLayout, QLabel, QLineEdit,
-                               QSpinBox)
+from PySide6.QtWidgets import (QDialog, QDialogButtonBox, QDoubleSpinBox, QFormLayout, QLabel,
+                               QLineEdit, QSpinBox)
 
 from ..config import Config
 from ..secret import protect, unprotect
@@ -43,6 +43,12 @@ class SettingsDialog(QDialog):
         self.every.setValue(cfg.auto_sync_minutes)
         self.every.setSuffix(" דקות")
         self.every.setSpecialValueText("כבוי")
+        self.usd = QDoubleSpinBox()
+        self.usd.setRange(1, 10)
+        self.usd.setDecimals(2)
+        self.usd.setSingleStep(0.05)
+        self.usd.setValue(cfg.usd_rate)
+        self.usd.setPrefix("₪")
         self.late = QSpinBox()
         self.late.setRange(0, 120)
         self.late.setValue(cfg.late_days)
@@ -61,6 +67,7 @@ class SettingsDialog(QDialog):
         form.addRow("לחפש מיילים מהתקופה של", self.days)
         form.addRow("סנכרון אוטומטי כל", self.every)
         form.addRow("זמן משלוח צפוי (אחריו: הודעה למוכר)", self.late)
+        form.addRow("שער הדולר (למחירים בדולרים)", self.usd)
         buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
         buttons.button(QDialogButtonBox.Save).setText("שמור")
         buttons.button(QDialogButtonBox.Cancel).setText("ביטול")
@@ -74,5 +81,6 @@ class SettingsDialog(QDialog):
         self.cfg.days_back = self.days.value()
         self.cfg.auto_sync_minutes = self.every.value()
         self.cfg.late_days = self.late.value()
+        self.cfg.usd_rate = self.usd.value()
         self.cfg.save()
         super().accept()

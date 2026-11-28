@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QComboBox, QFrame, QGridLayout
                                QTableWidgetItem, QVBoxLayout, QWidget)
 
 from ..config import Config
+from ..money import fmt, ils_text, to_ils
 from ..secret import unprotect
 from ..status import DELIVERED, LABEL, Advice, advice, days_ago, is_late
 from ..store import Row, Store
@@ -18,7 +19,11 @@ from .settings import SettingsDialog
 from .images import ImageLoader
 from .workers import SyncJob, SyncSignals
 
-COLUMNS = ["מספר מעקב", "מה בפנים", "סטטוס", "מה לעשות", "עדכון אחרון", "ימים מההזמנה"]
+COLUMNS = ["מספר מעקב", "מה בפנים", "מחיר", "סטטוס", "מה לעשות", "עדכון אחרון", "ימים מההזמנה"]
+TODO_COL = 4
+MONTHS = ["ינואר", "פברואר", "מרץ", "אפריל", "מאי", "יוני", "יולי", "אוגוסט", "ספטמבר",
+          "אוקטובר", "נובמבר", "דצמבר"]
+CANCELLED = ("cancel", "refund", "closed")
 # הראשון הוא ברירת המחדל: בלי החבילות שכבר התקבלו
 FILTERS = [("לא התקבלו", "open"), ("דורשות פעולה", "urgent"), ("הכול", "all")]
 URGENT_COLOR = QColor("#e67e22")
@@ -112,6 +117,7 @@ class MainWindow(QMainWindow):
         self.table.setWordWrap(False)
         head = self.table.horizontalHeader()
         for c, mode in enumerate([QHeaderView.ResizeToContents, QHeaderView.Stretch,
+                                  QHeaderView.ResizeToContents,
                                   QHeaderView.ResizeToContents, QHeaderView.Stretch,
                                   QHeaderView.ResizeToContents, QHeaderView.ResizeToContents]):
             head.setSectionResizeMode(c, mode)
@@ -138,6 +144,9 @@ class MainWindow(QMainWindow):
         root.addWidget(split, 1)
         self.setCentralWidget(central)
         self.status = self.statusBar()
+        self.month_label = QLabel()
+        self.month_label.setStyleSheet("font-weight: bold; padding: 0 8px;")
+        self.status.addPermanentWidget(self.month_label)
 
         self.timer = QTimer(self)
         self.timer.timeout.connect(lambda: self.sync(quiet=True))
@@ -165,6 +174,7 @@ class MainWindow(QMainWindow):
         old = (self.cfg.gmail, self.cfg.days_back)
         if SettingsDialog(self.cfg, self).exec():
             self._schedule()
+            self.refresh()
             if (self.cfg.gmail, self.cfg.days_back) != old:      # חשבון אחר או תקופה ארוכה יותר
                 self.store.set_meta("last_uid", "0")
             if self.configured():
@@ -254,15 +264,17 @@ class MainWindow(QMainWindow):
         for i, r in enumerate(rows):
             a = self.advice_for(r, now)
             days = (now - (r.ordered_at or r.first_seen)).days
-            values = [r.tracking or "עדיין אין", summary(r),
+            values = [r.tracking or "עדיין אין", summary(r), self.row_price(r),
                       "התקבל ✓" if r.done else LABEL.get(r.status, r.status_text or "לא ידוע"),
                       a.text, _ago(r.last_update), str(days)]
             for c, text in enumerate(values):
                 item = QTableWidgetItem(ltr(text) if c in (0, 1) else text)
                 item.setData(Qt.UserRole, r.key)
                 if c == 1:
-                    item.setToolTip("\n".join(f"{x.name} | {x.sku} {x.qty}" for x in r.items))
-                if c == 3 and a.urgent:
+                    item.setToolTip("\n".join(
+                        f"{x.name} | {x.sku} {x.qty}" + (f" | {self.price(x.price)}" if x.price else "")
+                        for x in r.items))
+                if c == TODO_COL and a.urgent:
                     item.setForeground(URGENT_COLOR)
                     item.setFont(bold)
                 self.table.setItem(i, c, item)
@@ -274,10 +286,42 @@ class MainWindow(QMainWindow):
         when = _ago(datetime.fromisoformat(last)) if last else "עוד לא"
         self.status.showMessage(f"{active} עוד לא התקבלו · {urgent} דורשות פעולה · סנכרון אחרון: {when}")
         self._update_banner()
+        self._update_month()
         if self.table.rowCount() and not self.table.selectedItems():
             self.select_row(0)
         if not rows:
             self.show_details()
+
+    # ---------------------------------------------------------------- מחירים
+    def price(self, text: str) -> str:
+        return ils_text(text, self.cfg.usd_rate, self.cfg.eur_rate)
+
+    def row_price(self, r: Row) -> str:
+        """הסכום בשקלים של ההזמנות שבחבילה."""
+        got = [to_ils(t, self.cfg.usd_rate, self.cfg.eur_rate) for t in r.totals.values()]
+        if not got or None in got:
+            return " + ".join(r.totals.values())
+        return fmt(sum(v for v, _ in got), any(c for _, c in got))
+
+    def month_total(self, now: datetime | None = None) -> tuple[float, int, bool]:
+        """סכום ההזמנות מתחילת החודש (בלי הזמנות שבוטלו): (שקלים, מספר הזמנות, האם יש המרה)."""
+        local = (now or datetime.now(timezone.utc)).astimezone()
+        start = local.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        total, count, converted = 0.0, 0, False
+        for _oid, amount, status_text in self.store.orders_since(start):
+            if any(w in status_text.lower() for w in CANCELLED):
+                continue
+            count += 1
+            got = to_ils(amount, self.cfg.usd_rate, self.cfg.eur_rate)
+            if got:
+                total += got[0]
+                converted |= got[1]
+        return total, count, converted
+
+    def _update_month(self) -> None:
+        total, count, converted = self.month_total()
+        month = MONTHS[datetime.now().astimezone().month - 1]
+        self.month_label.setText(f"הזמנות ב{month}: {fmt(total, converted)} · {count} הזמנות")
 
     def _update_banner(self) -> None:
         seller = self.store.get_meta("seller_msg_at")
@@ -346,7 +390,8 @@ class MainWindow(QMainWindow):
             pic.setAlignment(Qt.AlignCenter)
             pic.setStyleSheet("border: 1px solid rgba(128,128,128,0.4);")
             self._load_image(it.image, pic)
-            text = QLabel(f"<b>{it.name}</b><br>{it.sku} {it.qty}")
+            price = f" &nbsp; <b>{self.price(it.price)}</b>" if it.price else ""
+            text = QLabel(f"<b>{it.name}</b><br>{it.sku} {it.qty}{price}")
             text.setWordWrap(True)
             text.setTextInteractionFlags(Qt.TextSelectableByMouse)
             grid.addWidget(pic, n, 0)
@@ -354,7 +399,7 @@ class MainWindow(QMainWindow):
         grid.setColumnStretch(1, 1)
         lay.addWidget(grid_w)
 
-        orders = " · ".join(f"הזמנה {o}" + (f" ({r.totals[o]})" if o in r.totals else "")
+        orders = " · ".join(f"הזמנה {o}" + (f" ({self.price(r.totals[o])})" if o in r.totals else "")
                             for o in r.order_ids)
         if orders:
             info = QLabel(orders)

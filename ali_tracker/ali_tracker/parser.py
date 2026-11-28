@@ -12,6 +12,7 @@ from .status import classify
 ORDER_RE = re.compile(r"\bOrder (\d{12,20})\b", re.I)
 PACKAGE_RE = re.compile(r"\bPackage ([A-Z0-9]{8,30})\b", re.I)
 PRICE_RE = re.compile(r"(?:US\s?\$|\$|₪|ILS|€)\s?[\d.,]+")
+TOTAL_RE = re.compile(r"Order total\W{0,5}(" + PRICE_RE.pattern + ")", re.I)
 SELLER_MSG_RE = re.compile(r"messages? from sellers?", re.I)
 
 
@@ -21,6 +22,7 @@ class Item:
     sku: str = ""
     qty: str = ""
     image: str = ""
+    price: str = ""      # מחיר ההזמנה של המוצר, כשהוא לבד בהזמנה (נקבע בקריאה מהמסד)
 
 
 @dataclass
@@ -170,6 +172,9 @@ def parse_mail(subject: str, html: str, date: datetime, message_id: str = "") ->
         if price is not None:
             pm = PRICE_RE.search(price.text())
             total = pm.group(0) if pm else ""
+        if not total:                                 # מבנה אחר: מחפשים "Order total ₪12.65" בטקסט
+            pm = TOTAL_RE.search(_clean(root.text()))
+            total = pm.group(1) if pm else ""
         ev.orders.append(OrderInfo(oid, ord_items or pkg_items, total))
         for tracking, oids in pairs.items():         # מייל הזמנה שכבר כולל מספר מעקב
             if not oids or oid in oids:
