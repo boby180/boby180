@@ -65,11 +65,28 @@ def selftest(report: str) -> int:
         timer.start(100)
         QTimer.singleShot(30000, app.quit)
         app.exec()
+        timer.stop()                          # אחרת הוא סוגר גם את הבדיקה הבאה
         log = (cache / "errors.log").read_text(encoding="utf-8") if (cache / "errors.log").exists() else ""
         lines.append(f"image: {'ok ' + str(Path(got[0]).stat().st_size) + ' bytes' if got and got[0] else 'FAILED'}"
                      + (f"\n{log}" if log else ""))
     except Exception:
         lines.append("image: FAILED\n" + traceback.format_exc())
+    try:                                      # שער הדולר האמיתי מבנק ישראל
+        from PySide6.QtCore import QTimer
+        from PySide6.QtWidgets import QApplication
+
+        from ali_tracker.gui.rates import RateFetcher
+        app = QApplication.instance() or QApplication(sys.argv[:1])
+        res = []
+        fetcher = RateFetcher()
+        fetcher.done.connect(lambda got: (res.append(f"ok {got}"), app.quit()))
+        fetcher.failed.connect(lambda msg: (res.append(f"could not fetch ({msg})"), app.quit()))
+        fetcher.fetch()
+        QTimer.singleShot(45000, app.quit)
+        app.exec()
+        lines.append(f"rate: {res[0] if res else 'no answer'}")
+    except Exception:
+        lines.append("rate: FAILED\n" + traceback.format_exc())
     Path(report).write_text("\n".join(lines) + "\n", encoding="utf-8")
     return 0 if ok else 1
 

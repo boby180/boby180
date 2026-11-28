@@ -17,6 +17,8 @@ from ..status import DELIVERED, LABEL, Advice, advice, days_ago, is_late
 from ..store import Row, Store
 from .settings import SettingsDialog
 from .images import ImageLoader
+from .rates import RateFetcher
+from ..rates import date_he
 from .workers import SyncJob, SyncSignals
 
 COLUMNS = ["מספר מעקב", "מה בפנים", "מחיר", "סטטוס", "מה לעשות", "עדכון אחרון", "ימים מההזמנה"]
@@ -24,6 +26,7 @@ TODO_COL = 4
 MONTHS = ["ינואר", "פברואר", "מרץ", "אפריל", "מאי", "יוני", "יולי", "אוגוסט", "ספטמבר",
           "אוקטובר", "נובמבר", "דצמבר"]
 CANCELLED = ("cancel", "refund", "closed")
+RATE_EVERY_HOURS = 6        # בנק ישראל מפרסם שער יציג פעם ביום עסקים
 # הראשון הוא ברירת המחדל: בלי החבילות שכבר התקבלו
 FILTERS = [("לא התקבלו", "open"), ("דורשות פעולה", "urgent"), ("הכול", "all")]
 URGENT_COLOR = QColor("#e67e22")
@@ -73,6 +76,9 @@ class MainWindow(QMainWindow):
         self.sync_signals.failed.connect(self._sync_failed)
         self.sync_quiet = False
         self.images = ImageLoader(cfg.image_dir, self)
+        self.rates = RateFetcher(self)
+        self.rates.done.connect(self._rate_done)
+        self.rates.failed.connect(self._rate_failed)
 
         self.setWindowTitle("Ali Tracker – החבילות שלי מאלי אקספרס")
         self.resize(1150, 760)
@@ -144,12 +150,19 @@ class MainWindow(QMainWindow):
         root.addWidget(split, 1)
         self.setCentralWidget(central)
         self.status = self.statusBar()
+        self.rate_label = QLabel()
+        self.rate_label.setStyleSheet("padding: 0 8px;")
+        self.status.addPermanentWidget(self.rate_label)
         self.month_label = QLabel()
         self.month_label.setStyleSheet("font-weight: bold; padding: 0 8px;")
         self.status.addPermanentWidget(self.month_label)
 
         self.timer = QTimer(self)
         self.timer.timeout.connect(lambda: self.sync(quiet=True))
+        self.rate_timer = QTimer(self)
+        self.rate_timer.timeout.connect(self.check_rate)
+        self.rate_timer.start(60 * 60_000)
+        QTimer.singleShot(800, self.check_rate)
         self._schedule()
         self.refresh()
         if self.configured():
@@ -175,6 +188,7 @@ class MainWindow(QMainWindow):
         if SettingsDialog(self.cfg, self).exec():
             self._schedule()
             self.refresh()
+            self.check_rate(force=True)
             if (self.cfg.gmail, self.cfg.days_back) != old:      # חשבון אחר או תקופה ארוכה יותר
                 self.store.set_meta("last_uid", "0")
             if self.configured():
@@ -287,6 +301,7 @@ class MainWindow(QMainWindow):
         self.status.showMessage(f"{active} עוד לא התקבלו · {urgent} דורשות פעולה · סנכרון אחרון: {when}")
         self._update_banner()
         self._update_month()
+        self._update_rate_label()
         if self.table.rowCount() and not self.table.selectedItems():
             self.select_row(0)
         if not rows:
@@ -317,6 +332,52 @@ class MainWindow(QMainWindow):
                 total += got[0]
                 converted |= got[1]
         return total, count, converted
+
+    def check_rate(self, force: bool = False) -> None:
+        """בודק את השער היציג בבנק ישראל, אם עברו כמה שעות מהבדיקה הקודמת."""
+        if not self.cfg.auto_rate:
+            self._update_rate_label()
+            return
+        last = self.cfg.rate_checked
+        if not force and last:
+            try:
+                hours = (datetime.now(timezone.utc) - datetime.fromisoformat(last)).total_seconds() / 3600
+            except ValueError:
+                hours = RATE_EVERY_HOURS
+            if hours < RATE_EVERY_HOURS:
+                self._update_rate_label()
+                return
+        self.rates.fetch()
+
+    def _rate_done(self, got: dict) -> None:
+        usd, day = got["USD"]
+        self.cfg.usd_rate = round(usd, 4)
+        if "EUR" in got:
+            self.cfg.eur_rate = round(got["EUR"][0], 4)
+        self.cfg.rate_date = day
+        self.cfg.rate_checked = datetime.now(timezone.utc).isoformat()
+        self.cfg.save()
+        self.refresh()
+
+    def _rate_failed(self, msg: str) -> None:
+        self._update_rate_label(f"לא הצלחתי לבדוק את השער בבנק ישראל ({msg}). משתמש בשער השמור.")
+
+    def _update_rate_label(self, error: str = "") -> None:
+        rate = f"$1 = ₪{self.cfg.usd_rate:g}"
+        if self.cfg.auto_rate and self.cfg.rate_date:
+            self.rate_label.setText(f"{rate} (בנק ישראל, {date_he(self.cfg.rate_date)})")
+        else:
+            self.rate_label.setText(f"{rate} (ידני)" if not self.cfg.auto_rate else rate)
+        if error:
+            tip = error
+        elif self.cfg.auto_rate:
+            tip = (f"שער יציג של בנק ישראל. אירו: ₪{self.cfg.eur_rate:g}. "
+                   "מתעדכן אוטומטית; אפשר לכבות בהגדרות.")
+        else:
+            tip = "השער שהזנת בהגדרות."
+        self.rate_label.setToolTip(tip)
+        if error:
+            self.rate_label.setText(self.rate_label.text() + " ⚠")
 
     def _update_month(self) -> None:
         total, count, converted = self.month_total()
@@ -474,5 +535,6 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:
         self.timer.stop()
+        self.rate_timer.stop()
         self.store.close()
         super().closeEvent(event)

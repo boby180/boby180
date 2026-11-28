@@ -22,6 +22,9 @@ class Config:
     auto_sync_minutes: int = 30
     usd_rate: float = 3.7           # שער להמרת מחירים בדולרים לשקלים
     eur_rate: float = 4.0
+    auto_rate: bool = True          # לעדכן את השערים מבנק ישראל
+    rate_date: str = ""             # תאריך השער היציג שנשמר (YYYY-MM-DD), ריק = הוזן ידנית
+    rate_checked: str = ""          # מתי בדקנו לאחרונה (ISO)
     late_days: int = 30             # זמן משלוח צפוי מההזמנה; אחריו מציעים לשלוח הודעה למוכר (0 = כבוי)
 
     @property

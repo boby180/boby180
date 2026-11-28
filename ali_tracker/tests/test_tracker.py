@@ -7,7 +7,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from ali_tracker import money, samples, status
+from ali_tracker import money, rates, samples, status
 from ali_tracker.parser import parse_mail
 from ali_tracker.secret import protect, unprotect
 from ali_tracker.store import Store
@@ -145,6 +145,23 @@ def test_order_total_without_price_class():
             "<table><tr><td><span>Order total</span></td><td><span>₪12.65</span></td></tr></table>")
     ev = parse_mail("Order 1124000000000001: order confirmed", html, NOW)
     assert ev.orders[0].total == "₪12.65"
+
+
+def test_parse_bank_of_israel_rates():
+    text = ('{"exchangeRates":[{"key":"USD","currentExchangeRate":3.293,"currentChange":-1.2,"unit":1,'
+            '"lastUpdate":"2026-11-27T10:21:05.3133752Z"},'
+            '{"key":"JPY","currentExchangeRate":2.0643,"unit":100,"lastUpdate":"2026-11-27T10:21:05Z"},'
+            '{"key":"EUR","currentExchangeRate":3.6092,"unit":1,"lastUpdate":"2026-11-27T10:21:05Z"}]}')
+    got = rates.parse_json(text)
+    assert got["USD"] == (3.293, "2026-11-27") and got["EUR"][0] == 3.6092
+    assert abs(got["JPY"][0] - 0.020643) < 1e-9                   # מחיר ל-100 ין
+    csv_text = ("SERIES_CODE,FREQ,BASE_CURRENCY,COUNTER_CURRENCY,UNIT_MEASURE,DATA_TYPE,DATA_SOURCE,"
+                "TIME_COLLECT,CONF_STATUS,PUB_WEBSITE,UNIT_MULT,COMMENTS,TIME_PERIOD,OBS_VALUE,RELEASE_STATUS\n"
+                "RER_USD_ILS,D,USD,ILS,ILS,OF00,BOI_MRKT,V,F,Y,0,,2026-11-26,3.334,YP\n"
+                "RER_USD_ILS,D,USD,ILS,ILS,OF00,BOI_MRKT,V,F,Y,0,,2026-11-27,3.293,YP\n")
+    assert rates.parse_csv(csv_text) == (3.293, "2026-11-27")
+    assert rates.parse_csv("") is None and rates.parse_json("{}") == {}
+    assert rates.date_he("2026-11-27") == "27.11.2026"
 
 
 def test_money():

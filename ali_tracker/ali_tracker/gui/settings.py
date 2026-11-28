@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import (QDialog, QDialogButtonBox, QDoubleSpinBox, QFormLayout, QLabel,
+from PySide6.QtWidgets import (QCheckBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFormLayout, QLabel,
                                QLineEdit, QSpinBox)
 
 from ..config import Config
@@ -45,10 +45,14 @@ class SettingsDialog(QDialog):
         self.every.setSpecialValueText("כבוי")
         self.usd = QDoubleSpinBox()
         self.usd.setRange(1, 10)
-        self.usd.setDecimals(2)
-        self.usd.setSingleStep(0.05)
+        self.usd.setDecimals(3)
+        self.usd.setSingleStep(0.01)
         self.usd.setValue(cfg.usd_rate)
         self.usd.setPrefix("₪")
+        self.auto_rate = QCheckBox("לעדכן אוטומטית לפי השער היציג של בנק ישראל")
+        self.auto_rate.setChecked(cfg.auto_rate)
+        self.usd.setEnabled(not cfg.auto_rate)
+        self.auto_rate.toggled.connect(lambda on: self.usd.setEnabled(not on))
         self.late = QSpinBox()
         self.late.setRange(0, 120)
         self.late.setValue(cfg.late_days)
@@ -68,6 +72,7 @@ class SettingsDialog(QDialog):
         form.addRow("סנכרון אוטומטי כל", self.every)
         form.addRow("זמן משלוח צפוי (אחריו: הודעה למוכר)", self.late)
         form.addRow("שער הדולר (למחירים בדולרים)", self.usd)
+        form.addRow("", self.auto_rate)
         buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
         buttons.button(QDialogButtonBox.Save).setText("שמור")
         buttons.button(QDialogButtonBox.Cancel).setText("ביטול")
@@ -81,6 +86,9 @@ class SettingsDialog(QDialog):
         self.cfg.days_back = self.days.value()
         self.cfg.auto_sync_minutes = self.every.value()
         self.cfg.late_days = self.late.value()
-        self.cfg.usd_rate = self.usd.value()
+        if not self.auto_rate.isChecked() and (self.usd.value() != self.cfg.usd_rate or self.cfg.auto_rate):
+            self.cfg.usd_rate = self.usd.value()
+            self.cfg.rate_date = ""
+        self.cfg.auto_rate = self.auto_rate.isChecked()
         self.cfg.save()
         super().accept()

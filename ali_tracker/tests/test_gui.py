@@ -104,6 +104,119 @@ def test_message_seller(tmp_path, monkeypatch):
     w.close()
 
 
+def _serve(routes: dict[str, tuple[int, str]]):
+    """שרת מקומי קטן שמחזיר תשובה קבועה לכל נתיב."""
+    import http.server
+    import threading
+
+    class H(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            code, body = routes.get(self.path.split("?")[0], (404, ""))
+            self.send_response(code)
+            self.end_headers()
+            self.wfile.write(body.encode())
+
+        def log_message(self, *a):
+            pass
+
+    srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return srv, f"http://127.0.0.1:{srv.server_address[1]}"
+
+
+def _wait(app, cond, ms=5000):
+    from PySide6.QtCore import QTimer
+    t = QTimer()
+    t.timeout.connect(lambda: cond() and app.quit())
+    t.start(30)
+    QTimer.singleShot(ms, app.quit)
+    app.exec()
+    t.stop()
+
+
+@pytest.mark.real_rates
+@pytest.mark.parametrize("json_ok", [True, False])
+def test_rate_from_bank_of_israel(tmp_path, monkeypatch, json_ok):
+    """השער מתעדכן מבנק ישראל; אם הממשק הראשי לא עונה, מהסדרות (CSV); ומחירים בדולרים מתעדכנים."""
+    from ali_tracker.gui import rates as gui_rates
+
+    head = "TIME_PERIOD,OBS_VALUE\n"
+    srv, base = _serve({
+        "/json": (200 if json_ok else 500,
+                  '{"exchangeRates":[{"key":"USD","currentExchangeRate":3.293,"unit":1,'
+                  '"lastUpdate":"2026-11-27T10:21:05Z"},'
+                  '{"key":"EUR","currentExchangeRate":3.6092,"unit":1,"lastUpdate":"2026-11-27T10:21:05Z"}]}'),
+        "/USD": (200, head + "2026-11-26,3.334\n2026-11-27,3.3\n"),
+        "/EUR": (200, head + "2026-11-27,3.61\n"),
+    })
+    orig = gui_rates.RateFetcher.__init__
+
+    def init(self, parent=None):
+        orig(self, parent)
+        self.json_url, self.csv_url = base + "/json", base + "/{cur}"
+    monkeypatch.setattr(gui_rates.RateFetcher, "__init__", init)
+    monkeypatch.setattr(MainWindow, "_first_run", lambda self: None)
+    monkeypatch.setattr(MainWindow, "_load_image", lambda self, url, label: label.setText("img"))
+    cfg = Config(data_dir=str(tmp_path), auto_sync_minutes=0, usd_rate=3.7)
+    st = Store(cfg.db_path)
+    for subject, html, date, mid in samples.demo_mails():
+        st.apply(parse_mail(subject, html, date, mid))
+    st.close()
+    app = QApplication.instance() or QApplication([])
+    try:
+        w = MainWindow(cfg)
+        _wait(app, lambda: cfg.rate_date)
+    finally:
+        srv.shutdown()
+    want = 3.293 if json_ok else 3.3
+    assert cfg.usd_rate == want and cfg.rate_date == "2026-11-27" and cfg.rate_checked
+    assert cfg.eur_rate == (3.6092 if json_ok else 3.61)
+    assert "בנק ישראל, 27.11.2026" in w.rate_label.text()
+    w.filter.setCurrentIndex(2)
+    price = {w.table.item(i, 0).data(Qt.UserRole): w.table.item(i, 2).text()
+             for i in range(w.table.rowCount())}
+    assert price["RS0000000001Y"] == f"≈ ₪{30.40 * want:,.2f}"
+    # בדיקה נוספת מיד אחר כך לא פונה שוב לבנק
+    calls = []
+    monkeypatch.setattr(w.rates, "fetch", lambda: calls.append(1))
+    w.check_rate()
+    assert not calls
+    w.close()
+
+
+@pytest.mark.real_rates
+def test_rate_failure_keeps_saved_rate(tmp_path, monkeypatch):
+    from ali_tracker.gui import rates as gui_rates
+
+    srv, base = _serve({})
+    orig = gui_rates.RateFetcher.__init__
+
+    def init(self, parent=None):
+        orig(self, parent)
+        self.json_url, self.csv_url = base + "/json", base + "/{cur}"
+    monkeypatch.setattr(gui_rates.RateFetcher, "__init__", init)
+    monkeypatch.setattr(MainWindow, "_first_run", lambda self: None)
+    cfg = Config(data_dir=str(tmp_path), auto_sync_minutes=0, usd_rate=3.5, rate_date="2026-11-20")
+    app = QApplication.instance() or QApplication([])
+    try:
+        w = MainWindow(cfg)
+        _wait(app, lambda: "⚠" in w.rate_label.text())
+    finally:
+        srv.shutdown()
+    assert cfg.usd_rate == 3.5 and "⚠" in w.rate_label.text()
+    assert "לא הצלחתי" in w.rate_label.toolTip()
+    w.close()
+
+
+def test_manual_rate(tmp_path, monkeypatch):
+    monkeypatch.setattr(MainWindow, "_first_run", lambda self: None)
+    cfg = Config(data_dir=str(tmp_path), auto_sync_minutes=0, usd_rate=3.65, auto_rate=False)
+    app = QApplication.instance() or QApplication([])  # noqa: F841
+    w = MainWindow(cfg)
+    assert w.rate_label.text() == "$1 = ₪3.65 (ידני)"
+    w.close()
+
+
 def test_prices_and_month_total(tmp_path, monkeypatch):
     from datetime import timedelta
 
